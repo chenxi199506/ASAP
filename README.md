@@ -32,7 +32,7 @@ It introduces three major components:
 You can directly access **ASAP**, our interactive agent-based platform for automated secondary meta-analysis and evidence visualization, via the link above.  
 The platform supports **real-time literature retrieval, automated quality assessment, and data visualization**.
 
-[![ASAP Platform Preview](https://chatgptmodel.shinyapps.io/UMAR/)](https://github.com/chenxi199506/ASAP/blob/master/ASAP.png)
+![ASAP Platform Preview](https://github.com/chenxi199506/ASAP/blob/master/ASAP.png)
 
 *(If the preview does not load on GitHub, please click the link above to open the live version.)*
 
