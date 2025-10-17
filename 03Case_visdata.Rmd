@@ -1,0 +1,1080 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-10-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+
+library(rio)
+table <- import("PMC10579187.xlsx")
+table$Author <- table$`Study (Author)`
+table$Year <- as.numeric(table$Year)
+
+stable <- import("goldstandard.xlsx")  
+
+alldf <- merge(table,stable,by="Author")
+
+alldf <- full_join(table, stable, by = c("Author", "Year"))
+
+write.csv(alldf,file = "mergedata.csv")
+
+```
+
+
+
+# 初始绘图代码
+
+```{r}
+# 加载必要的包
+library(metafor)
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(RColorBrewer)
+
+# 设置参数
+input_file <- "input.xlsx"
+base_output_dir <- "meta_analysis_plots"
+
+# 创建按日期命名的输出目录
+current_date <- format(Sys.Date(), "%Y%m%d")
+output_dir <- file.path(base_output_dir, current_date)
+
+# 创建输出目录（如果不存在）
+if (!dir.exists(base_output_dir)) {
+  dir.create(base_output_dir)
+}
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+cat("输出目录:", output_dir, "\n")
+
+# 数据预处理函数
+prepare_data <- function(data) {
+  # 自动检测列名（基于您代码中的逻辑）
+  auto_detect_columns <- function(data) {
+    col_names <- names(data)
+    mapping <- list()
+    
+    effect_patterns <- c("effect", "es", "d\\(", "g\\(", "or", "rr", "hr", "coef", "estimate")
+    ci_lower_patterns <- c("lower", "ci_lower", "lci", "ci.l", "lower_ci", "lower\\.ci")
+    ci_upper_patterns <- c("upper", "ci_upper", "uci", "ci.u", "upper_ci", "upper\\.ci")
+    author_patterns <- c("author", "authors", "name", "names", "study", "id")
+    year_patterns <- c("year", "yr", "date", "publication")
+    study_name_patterns <- c("study", "study_name", "study_id", "id", "title")
+    sample_size_patterns <- c("n", "sample", "size", "sample_size", "n_total")
+    
+    find_matching_column <- function(col_names, patterns) {
+      for (pattern in patterns) {
+        matches <- grep(pattern, col_names, ignore.case = TRUE, value = TRUE)
+        if (length(matches) > 0) return(matches[1])
+      }
+      return(NULL)
+    }
+    
+    mapping$effect_size <- find_matching_column(col_names, effect_patterns)
+    mapping$ci_lower <- find_matching_column(col_names, ci_lower_patterns)
+    mapping$ci_upper <- find_matching_column(col_names, ci_upper_patterns)
+    mapping$authors <- find_matching_column(col_names, author_patterns)
+    mapping$year <- find_matching_column(col_names, year_patterns)
+    mapping$study_name <- find_matching_column(col_names, study_name_patterns)
+    mapping$sample_size <- find_matching_column(col_names, sample_size_patterns)
+    
+    return(mapping)
+  }
+  
+  mapping <- auto_detect_columns(data)
+  
+  # 创建映射后的数据
+  mapped_data <- data.frame(
+    effect_size = as.numeric(data[[mapping$effect_size]]),
+    ci_lower = as.numeric(data[[mapping$ci_lower]]),
+    ci_upper = as.numeric(data[[mapping$ci_upper]]),
+    stringsAsFactors = FALSE
+  )
+  
+  # 添加可选列
+  if (!is.null(mapping$authors)) {
+    mapped_data$authors <- as.character(data[[mapping$authors]])
+  }
+  if (!is.null(mapping$year)) {
+    mapped_data$year <- as.numeric(data[[mapping$year]])
+  }
+  if (!is.null(mapping$study_name)) {
+    mapped_data$study_name <- as.character(data[[mapping$study_name]])
+  }
+  if (!is.null(mapping$sample_size)) {
+    mapped_data$sample_size <- as.numeric(data[[mapping$sample_size]])
+  }
+  
+  # 创建研究标签
+  if ("authors" %in% names(mapped_data) && "year" %in% names(mapped_data)) {
+    mapped_data$study_label <- paste(mapped_data$authors, "(", mapped_data$year, ")")
+  } else if ("authors" %in% names(mapped_data)) {
+    mapped_data$study_label <- mapped_data$authors
+  } else if ("study_name" %in% names(mapped_data)) {
+    mapped_data$study_label <- mapped_data$study_name
+  } else {
+    mapped_data$study_label <- paste("Study", 1:nrow(mapped_data))
+  }
+  
+  # 计算标准误
+  mapped_data$se <- (mapped_data$ci_upper - mapped_data$ci_lower) / (2 * 1.96)
+  
+  return(mapped_data)
+}
+
+# 运行meta分析
+run_meta_analysis <- function(data, method = "REML") {
+  meta_model <- metafor::rma(
+    yi = effect_size,
+    sei = se,
+    data = data,
+    method = method,
+    slab = study_label
+  )
+  
+  return(meta_model)
+}
+
+# 1. 森林图函数
+ create_forest_plot <- function(data, meta_model) {
+  # 准备数据 - 二次Meta分析的数据是一次Meta分析的SMD结果
+  plot_data <- data %>%
+    mutate(
+      name = study_label,
+      effect_ci = sprintf("%.2f [%.2f, %.2f]", effect_size, ci_lower, ci_upper)
+    )
+  
+  # 添加二次Meta分析的汇总结果 - 使用加权平均SMD
+  overall_effect <- data.frame(
+    name = "Pooled SMD",
+    effect_size = meta_model$b[1],
+    ci_lower = meta_model$ci.lb,
+    ci_upper = meta_model$ci.ub,
+    effect_ci = sprintf("%.2f [%.2f, %.2f]", 
+                        meta_model$b[1], 
+                        meta_model$ci.lb, 
+                        meta_model$ci.ub)
+  )
+  
+  # 合并数据
+  final_data <- bind_rows(plot_data, overall_effect)
+  
+  # 配置信息 - 明确显示这是基于SMD的二次Meta分析
+  column_info <- tibble(
+    id = c("name", "forest_plot", "effect_ci"),
+    name = c("Primary Meta-Analysis", "Forest Plot", "SMD [95% CI]"),
+    group = c("treatment", "forest", "effect"),
+    width = c(7, 12, 5)
+  )
+  
+  row_info <- tibble(
+    id = final_data$name,
+    group = "Meta-Analysis"
+  )
+  
+  # 设置尺寸参数
+  row_height <- 1.1
+  row_space <- 0.1
+  col_space <- 0.2
+  
+  # 计算行位置
+  row_pos <- row_info %>%
+    mutate(
+      row_i = row_number(),
+      colour_background = row_i %% 2 == 1,
+      y = -row_i * (row_height + row_space),
+      ymin = y - row_height / 2,
+      ymax = y + row_height / 2
+    )
+  
+  # 计算列位置
+  column_pos <- column_info %>%
+    mutate(
+      x = cumsum(c(0, head(width, -1)) + width/2 + c(0, rep(col_space, n()-1))),
+      xmin = x - width/2,
+      xmax = x + width/2
+    )
+  
+  # 森林图数据准备
+  forest_data <- final_data %>%
+    mutate(
+      model_name = name,
+      # 计算在森林图列中的位置
+      forest_xmin = column_pos$xmin[column_pos$id == "forest_plot"],
+      forest_xmax = column_pos$xmax[column_pos$id == "forest_plot"],
+      # 计算效应值在森林图列中的x坐标
+      x_effect = forest_xmin + 
+        (effect_size - min(final_data$ci_lower)) / 
+        (max(final_data$ci_upper) - min(final_data$ci_lower)) * 
+        (forest_xmax - forest_xmin),
+      # 计算置信区间在森林图列中的位置
+      x_left = forest_xmin + 
+        (ci_lower - min(final_data$ci_lower)) / 
+        (max(final_data$ci_upper) - min(final_data$ci_lower)) * 
+        (forest_xmax - forest_xmin),
+      x_right = forest_xmin + 
+        (ci_upper - min(final_data$ci_lower)) / 
+        (max(final_data$ci_upper) - min(final_data$ci_lower)) * 
+        (forest_xmax - forest_xmin),
+      y = row_pos$y[match(name, row_pos$id)]
+    )
+  
+  # 创建效应值颜色
+  effect_colors <- colorRampPalette(rev(brewer.pal(9, "RdYlBu")))(nrow(final_data))
+  forest_data$color <- effect_colors[rank(forest_data$effect_size, ties.method = "average")]
+  
+  # 创建文本数据
+  text_data <- bind_rows(
+    # 处理名称
+    data.frame(
+      model_name = final_data$name,
+      metric = "name",
+      x = column_pos$xmin[column_pos$id == "name"] + 0.3,
+      y = row_pos$y[match(final_data$name, row_pos$id)],
+      label = final_data$name,
+      hjust = 0,
+      vjust = 0.5,
+      fontface = ifelse(final_data$name == "Pooled SMD", "bold", "plain"),
+      size = ifelse(final_data$name == "Pooled SMD", 4, 3.5),
+      color = ifelse(final_data$name == "Pooled SMD", "darkblue", "black"),
+      stringsAsFactors = FALSE
+    ),
+    # 处理效应值和CI合并列
+    data.frame(
+      model_name = final_data$name,
+      metric = "effect_ci",
+      x = column_pos$x[column_pos$id == "effect_ci"],
+      y = row_pos$y[match(final_data$name, row_pos$id)],
+      label = final_data$effect_ci,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = ifelse(final_data$name == "Pooled SMD", "bold", "plain"),
+      size = ifelse(final_data$name == "Pooled SMD", 3.5, 3.2),
+      color = ifelse(final_data$name == "Pooled SMD", "darkblue", "black"),
+      stringsAsFactors = FALSE
+    )
+  ) %>% as_tibble()
+  
+  # 添加排名文本（不包含汇总结果）
+  rank_data <- data.frame(
+    x = column_pos$xmin[column_pos$id == "name"] - 0.5,
+    y = row_pos$y[1:(nrow(final_data)-1)],  # 排除汇总结果
+    label = 1:(nrow(final_data)-1),
+    hjust = 0.5,
+    fontface = "bold",
+    size = 4,
+    color = "black",
+    stringsAsFactors = FALSE
+  ) %>% as_tibble()
+  
+  # 列标题
+  column_text <- column_pos %>%
+    mutate(
+      y = max(row_pos$ymax) + 1.2,
+      label = name,
+      angle = 0,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "bold",
+      size = 3.5,
+      color = "black"
+    )
+  
+  # SMD的参考线 - 通常为0（无效应）
+  reference_value <- 0
+  reference_x <- column_pos$xmin[column_pos$id == "forest_plot"] + 
+    (reference_value - min(final_data$ci_lower)) / 
+    (max(final_data$ci_upper) - min(final_data$ci_lower)) * 
+    (column_pos$xmax[column_pos$id == "forest_plot"] - column_pos$xmin[column_pos$id == "forest_plot"])
+  
+  reference_line <- data.frame(
+    x = reference_x,
+    xend = reference_x,
+    y = min(row_pos$ymin) - 0.2,
+    yend = max(row_pos$ymax) + 0.2
+  )
+  
+  # 添加效应方向标签
+  effect_direction <- data.frame(
+    x = c(reference_x - (column_pos$xmax[column_pos$id == "forest_plot"] - column_pos$xmin[column_pos$id == "forest_plot"]) * 0.1, 
+          reference_x + (column_pos$xmax[column_pos$id == "forest_plot"] - column_pos$xmin[column_pos$id == "forest_plot"]) * 0.1),
+    y = min(row_pos$ymin) - 0.8,
+    label = c("Favors Control", "Favors physical activity"),
+    hjust = c(1, 0),
+    color = "darkred",
+    stringsAsFactors = FALSE
+  )
+  
+  # 创建图表
+  g <- ggplot() +
+    # 背景色带
+    geom_rect(
+      data = row_pos %>% filter(colour_background),
+      aes(xmin = min(column_pos$xmin) - 0.3, xmax = max(column_pos$xmax) + 0.3,
+          ymin = ymin, ymax = ymax),
+      fill = "#DDDDDD", alpha = 0.8
+    ) +
+    
+    # 参考线 - 实线
+    geom_segment(
+      data = reference_line,
+      aes(x = x, xend = xend, y = y, yend = yend),
+      color = "black", linetype = "solid", size = 1, alpha = 0.7
+    ) +
+    
+    # 置信区间线段 - 粗线
+    geom_segment(
+      data = forest_data,
+      aes(x = x_left, xend = x_right, y = y, yend = y),
+      color = "black", size = 1, lineend = "butt"
+    ) +
+    
+    # 置信区间T形末端 - 上端
+    geom_segment(
+      data = forest_data,
+      aes(x = x_left, xend = x_left, 
+          y = y - 0.15, yend = y + 0.15),
+      color = "black", size = 1, lineend = "butt"
+    ) +
+    
+    # 置信区间T形末端 - 下端
+    geom_segment(
+      data = forest_data,
+      aes(x = x_right, xend = x_right, 
+          y = y - 0.15, yend = y + 0.15),
+      color = "black", size = 1, lineend = "butt"
+    ) +
+    
+    # 效应值点
+    geom_point(
+      data = forest_data,
+      aes(x = x_effect, y = y, fill = color),
+      shape = 23, color = "black", size = 3, stroke = 1.2
+    ) +
+    
+    # 所有文本
+    geom_text(
+      data = text_data,
+      aes(x = x, y = y, label = label, hjust = hjust, vjust = vjust, 
+          fontface = fontface, size = size, color = color)
+    ) +
+    
+    # 排名数字（不包含汇总结果）
+    geom_text(
+      data = rank_data,
+      aes(x = x, y = y, label = label, hjust = hjust),
+      fontface = "bold", size = 4, color = "black"
+    ) +
+    
+    # 列标题
+    geom_text(
+      data = column_text,
+      aes(x = x, y = y, label = label, hjust = hjust, vjust = vjust),
+      fontface = "bold", size = 3.5, color = "black"
+    ) +
+    
+    # 效应方向标签
+    geom_text(
+      data = effect_direction,
+      aes(x = x, y = y, label = label, hjust = hjust, color = color),
+      size = 3, fontface = "bold"
+    ) +
+    
+    # 使用identity scales
+    scale_fill_identity() +
+    scale_color_identity() +
+    scale_size_identity() +
+    
+    # 主题设置
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.margin = margin(1, 1, 2, 1, "cm"),
+      panel.background = element_rect(fill = "white", color = NA),
+      text = element_text(size = 10)
+    ) +
+    
+    # 坐标限制
+    coord_equal(
+      xlim = c(min(column_pos$xmin) - 1, max(column_pos$xmax) + 0.5),
+      ylim = c(min(row_pos$ymin) - 1.2, max(row_pos$ymax) + 2.0)
+    )
+  
+  return(g)
+}
+
+
+# 2. 漏斗图函数
+create_funnel_plot <- function(data, meta_model) {
+  if (nrow(data) < 2) {
+    return(ggplot() +
+             labs(title = "Funnel Plot",
+                  subtitle = "Insufficient data for funnel plot") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    # Prepare funnel plot data
+    plot_data <- data.frame(
+      study = 1:meta_model$k,
+      effect_size = data$effect_size,
+      se = sqrt(meta_model$vi),
+      weight = weights(meta_model),
+      precision = 1/sqrt(meta_model$vi)
+    )
+    
+    # Calculate Egger's test
+    egger_test <- tryCatch({
+      metafor::regtest(meta_model)
+    }, error = function(e) {
+      NULL
+    })
+    
+    # Create funnel plot using ggplot2
+    p <- ggplot(plot_data, aes(x = effect_size, y = precision)) +
+      
+      # Add points with consistent styling
+      geom_point(aes(size = weight, fill = weight), 
+                 shape = 21, color = "white", stroke = 0.8, alpha = 0.9) +
+      
+      # Add overall effect line
+      geom_vline(xintercept = meta_model$b[1], 
+                 linetype = "solid", color = "#e74c3c", linewidth = 1) +
+      
+      # Add zero line
+      geom_vline(xintercept = 0, 
+                 linetype = "dashed", color = "grey", linewidth = 0.5) +
+      
+      # Add pseudo-confidence intervals (funnel shape)
+      stat_summary_bin(fun = mean, geom = "line", 
+                       aes(y = precision, x = effect_size),
+                       color = "#3498db", alpha = 0.6, linewidth = 0.8) +
+      
+      # Size and fill scales (consistent with radial plot)
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Weight",
+                         breaks = seq(0.1, 0.9, by = 0.2),
+                         labels = scales::percent_format(accuracy = 1)) +
+      scale_size_continuous(range = c(3, 8), name = "Weight",
+                           breaks = seq(0.1, 0.9, by = 0.2),
+                           labels = scales::percent_format(accuracy = 1)) +
+      
+      # Labels and titles
+      labs(title = "Funnel Plot for Publication Bias Assessment",
+           subtitle = "Asymmetry may indicate potential publication bias",
+           x = "Effect Size",
+           y = "Precision (1/SE)") +
+      
+      # Classic theme for publication (consistent with radial plot)
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13,
+                                  margin = margin(b = 8)),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11,
+                                     margin = margin(b = 12)),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.6, "cm"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.margin = margin(15, 15, 15, 15)
+      ) +
+      
+      # Axis scales
+      scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+      scale_y_continuous(breaks = scales::pretty_breaks(n = 5))
+    
+    # Add Egger's test results if available
+    if (!is.null(egger_test)) {
+      pval_text <- ifelse(egger_test$pval < 0.001, 
+                         "Egger's test: p < 0.001", 
+                         sprintf("Egger's test: p = %.3f", egger_test$pval))
+      
+      interpretation <- ifelse(egger_test$pval < 0.05,
+                             "Suggests potential publication bias", 
+                             "No significant publication bias detected")
+      
+      p <- p + 
+        annotate("text", 
+                 x = min(plot_data$effect_size), 
+                 y = max(plot_data$precision) * 0.95,
+                 label = pval_text,
+                 hjust = 0, vjust = 1, size = 3.5,
+                 color = ifelse(egger_test$pval < 0.05, "#e74c3c", "#2c3e50"),
+                 fontface = ifelse(egger_test$pval < 0.05, "bold", "plain")) +
+        annotate("text",
+                 x = min(plot_data$effect_size),
+                 y = max(plot_data$precision) * 0.88,
+                 label = interpretation,
+                 hjust = 0, vjust = 1, size = 3.2,
+                 color = ifelse(egger_test$pval < 0.05, "#e74c3c", "#27ae60"),
+                 fontface = ifelse(egger_test$pval < 0.05, "bold", "plain"))
+    } else {
+      p <- p + 
+        annotate("text", 
+                 x = min(plot_data$effect_size), 
+                 y = max(plot_data$precision) * 0.95,
+                 label = "Egger's test: Could not be computed",
+                 hjust = 0, vjust = 1, size = 3.5,
+                 color = "#7f8c8d")
+    }
+    
+    # Add study count annotation
+    p <- p +
+      annotate("text",
+               x = max(plot_data$effect_size),
+               y = max(plot_data$precision) * 0.95,
+               label = sprintf("Number of studies: %d", nrow(plot_data)),
+               hjust = 1, vjust = 1, size = 3.5,
+               color = "#2c3e50", fontface = "bold")
+    
+    return(list(plot = p, egger_test = egger_test))
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Funnel Plot",
+           subtitle = "Error in generating funnel plot") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+}
+
+# 更精美的漏斗图版本 - 添加真实的漏斗形状
+create_enhanced_funnel_plot <- function(data, meta_model) {
+  if (nrow(data) < 2) {
+    return(ggplot() +
+             labs(title = "Funnel Plot",
+                  subtitle = "Insufficient data for funnel plot") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    # Prepare funnel plot data
+    plot_data <- data.frame(
+      study = 1:meta_model$k,
+      effect_size = data$effect_size,
+      se = sqrt(meta_model$vi),
+      weight = weights(meta_model),
+      precision = 1/sqrt(meta_model$vi)
+    )
+    
+    # Calculate Egger's test
+    egger_test <- tryCatch({
+      metafor::regtest(meta_model)
+    }, error = function(e) {
+      NULL
+    })
+    
+    # Create funnel shape data
+    funnel_lines <- data.frame(
+      x = seq(min(plot_data$effect_size) - 1, max(plot_data$effect_size) + 1, length.out = 100)
+    )
+    funnel_lines$y_upper <- 1 / (1.96 * abs(funnel_lines$x - meta_model$b[1]))
+    funnel_lines$y_lower <- 1 / (1.96 * abs(funnel_lines$x - meta_model$b[1]))
+    
+    # Create enhanced funnel plot
+    p <- ggplot(plot_data, aes(x = effect_size, y = precision)) +
+      
+      # Add funnel shape
+      geom_line(data = funnel_lines, aes(x = x, y = y_upper), 
+                color = "#3498db", linetype = "dashed", alpha = 0.7, linewidth = 0.8) +
+      geom_line(data = funnel_lines, aes(x = x, y = y_lower), 
+                color = "#3498db", linetype = "dashed", alpha = 0.7, linewidth = 0.8) +
+      
+      # Add points with consistent styling
+      geom_point(aes(size = weight, fill = weight), 
+                 shape = 21, color = "white", stroke = 0.8, alpha = 0.9) +
+      
+      # Add overall effect line
+      geom_vline(xintercept = meta_model$b[1], 
+                 linetype = "solid", color = "#e74c3c", linewidth = 1.2) +
+      
+      # Add zero line
+      geom_vline(xintercept = 0, 
+                 linetype = "dashed", color = "grey", linewidth = 0.8, alpha = 0.8) +
+      
+      # Size and fill scales (consistent with radial plot)
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Weight",
+                         breaks = seq(0.1, 0.9, by = 0.2),
+                         labels = scales::percent_format(accuracy = 1)) +
+      scale_size_continuous(range = c(3, 8), name = "Weight",
+                           breaks = seq(0.1, 0.9, by = 0.2),
+                           labels = scales::percent_format(accuracy = 1)) +
+      
+      # Labels and titles
+      labs(title = "Enhanced Funnel Plot for Publication Bias Assessment",
+           subtitle = "Dashed lines represent expected 95% confidence intervals under no bias",
+           x = "Effect Size",
+           y = "Precision (1/SE)") +
+      
+      # Classic theme for publication
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13,
+                                  margin = margin(b = 8)),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11,
+                                     margin = margin(b = 12)),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "right",
+        legend.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 9),
+        legend.key.size = unit(0.6, "cm"),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        plot.margin = margin(15, 15, 15, 15)
+      ) +
+      
+      # Axis scales
+      scale_x_continuous(breaks = scales::pretty_breaks(n = 6)) +
+      scale_y_continuous(breaks = scales::pretty_breaks(n = 5))
+    
+    # Add Egger's test results if available
+  
+    
+    return(list(plot = p, egger_test = egger_test))
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Enhanced Funnel Plot",
+           subtitle = "Error in generating enhanced funnel plot") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+}
+
+# 3. 累积meta分析图
+create_cumulative_plot <- function(data, meta_model) {
+  if (nrow(data) < 2) {
+    return(ggplot() +
+             labs(title = "Cumulative Meta-Analysis",
+                  subtitle = "Insufficient data for cumulative analysis") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    # Perform cumulative meta-analysis
+    cumulative_model <- metafor::cumul(meta_model, order = order(data$year))
+    
+    # Prepare data for plotting
+    plot_data <- data.frame(
+      study = 1:meta_model$k,
+      estimate = cumulative_model$estimate,
+      ci_lower = cumulative_model$ci.lb,
+      ci_upper = cumulative_model$ci.ub
+    )
+    
+    ggplot(plot_data, aes(x = study, y = estimate)) +
+      geom_hline(yintercept = meta_model$b[1], linetype = "dashed", color = "#e74c3c", linewidth = 0.8) +
+      geom_ribbon(aes(ymin = ci_lower, ymax = ci_upper), alpha = 0.2, fill = "lightblue") +
+      geom_line(color = "darkblue", linewidth = 1) +
+      geom_point(color = "darkblue", size = 2.5) +
+      labs(title = "Cumulative Meta-Analysis",
+           subtitle = "Shows how effect size changes as studies are added sequentially",
+           x = "Number of Studies",
+           y = "Cumulative Effect Size") +
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)
+      )
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Cumulative Meta-Analysis",
+           subtitle = "Error in generating cumulative analysis") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+}
+
+# 4. 影响分析图（带标签优化）
+create_influence_plot <- function(data, meta_model) {
+  if (nrow(data) < 3) {
+    return(ggplot() +
+             labs(title = "Influence Analysis",
+                  subtitle = "Need at least 3 studies for influence analysis") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    k <- meta_model$k
+    influence_stats <- data.frame(
+      study = 1:k,
+      study_label = data$study_label,
+      effect_size = data$effect_size,
+      weight = weights(meta_model)
+    )
+    
+    # 计算删除每个研究后的效应量变化
+    influence_stats$effect_change <- sapply(1:k, function(i) {
+      tryCatch({
+        model_i <- metafor::rma(
+          yi = effect_size[-i],
+          sei = se[-i],
+          data = data[-i, ],
+          method = "REML"
+        )
+        abs(model_i$b[1] - meta_model$b[1])
+      }, error = function(e) {
+        NA
+      })
+    })
+    
+    # 计算标准化残差作为影响度量
+    influence_stats$influence_measure <- abs(rstandard(meta_model)$z)
+    
+    # 移除NA值
+    influence_stats <- influence_stats[complete.cases(influence_stats), ]
+    
+    # 使用ggrepel优化标签布局
+    library(ggrepel)
+    
+    ggplot(influence_stats, aes(x = study, y = influence_measure)) +
+      geom_hline(yintercept = 2, linetype = "dashed", color = "#e74c3c", linewidth = 0.8) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey", linewidth = 0.5) +
+      geom_segment(aes(xend = study, yend = 0), color = "darkblue", alpha = 0.7, linewidth = 1) +
+      geom_point(aes(size = effect_change, fill = influence_measure), 
+                 shape = 21, color = "white", stroke = 0.8) +
+      # 使用ggrepel添加标签，根据影响度调整位置
+      geom_text_repel(
+        aes(label = study_label),
+        size = 3.2,
+        color = "darkblue",
+        fontface = "bold",
+        box.padding = 0.5,
+        point.padding = 0.3,
+        segment.color = "grey50",
+        segment.size = 0.3,
+        min.segment.length = 0.2,
+        max.overlaps = 20,
+        force = 2,
+        direction = "both",
+        nudge_y = ifelse(influence_stats$influence_measure > 2, 0.3, -0.3)
+      ) +
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Influence") +
+      scale_size_continuous(range = c(3, 8), name = "Effect Size\nChange") +
+      labs(title = "Influence Analysis",
+           subtitle = "Shows each study's influence on the overall results",
+           x = "Study Number",
+           y = "Influence Measure (|z-score|)") +
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom",
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)
+      ) +
+      scale_x_continuous(breaks = 1:k, labels = 1:k)
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Influence Analysis",
+           subtitle = "Could not generate influence analysis") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold", color = "red"))
+  })
+}
+
+# 5. Baujat图（带标签优化）
+create_baujat_plot <- function(data, meta_model) {
+  if (nrow(data) < 3) {
+    return(ggplot() +
+             labs(title = "Baujat Plot",
+                  subtitle = "Need at least 3 studies for Baujat plot") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    # Create Baujat plot data
+    Q_total <- meta_model$QE
+    weights <- weights(meta_model)
+    contributions <- (data$effect_size - meta_model$b[1])^2 / meta_model$vi
+    
+    plot_data <- data.frame(
+      study = 1:meta_model$k,
+      study_label = data$study_label,
+      heterogeneity = contributions,
+      influence = weights * (data$effect_size - meta_model$b[1])^2,
+      weights = weights
+    )
+    
+    # 识别异常值（前25%的影响度或异质性）
+    influence_threshold <- quantile(plot_data$influence, 0.75)
+    hetero_threshold <- quantile(plot_data$heterogeneity, 0.75)
+    
+    plot_data$is_outlier <- plot_data$influence > influence_threshold | 
+                           plot_data$heterogeneity > hetero_threshold
+    
+    library(ggrepel)
+    
+    ggplot(plot_data, aes(x = heterogeneity, y = influence)) +
+      geom_point(aes(size = weights, fill = influence), 
+                 shape = 21, color = "white", stroke = 0.8) +
+      geom_smooth(method = "lm", se = FALSE, color = "#e74c3c", 
+                  linetype = "dashed", linewidth = 0.8) +
+      # 为异常值点添加标签，其他点只在悬停时显示
+      geom_text_repel(
+        data = subset(plot_data, is_outlier),
+        aes(label = study_label),
+        size = 3.2,
+        color = "darkred",
+        fontface = "bold",
+        box.padding = 0.6,
+        point.padding = 0.4,
+        segment.color = "red",
+        segment.size = 0.4,
+        min.segment.length = 0.1,
+        max.overlaps = 15,
+        force = 3,
+        nudge_x = 0.1,
+        nudge_y = 0.1
+      ) +
+      # 为非异常值点添加较轻的标签
+      geom_text_repel(
+        data = subset(plot_data, !is_outlier),
+        aes(label = study_label),
+        size = 2.8,
+        color = "grey40",
+        alpha = 0.7,
+        box.padding = 0.3,
+        point.padding = 0.2,
+        segment.color = "grey",
+        segment.size = 0.2,
+        min.segment.length = 0.3,
+        max.overlaps = 10,
+        force = 1
+      ) +
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Influence") +
+      scale_size_continuous(range = c(3, 8), name = "Weight") +
+      labs(title = "Baujat Plot",
+           subtitle = "Identifies studies that contribute to heterogeneity",
+           x = "Contribution to Q statistic",
+           y = "Influence on overall estimate") +
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)
+      )
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Baujat Plot",
+           subtitle = "Error in generating Baujat plot") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+}
+
+# 6. 径向图（带标签优化）
+create_radial_plot <- function(data, meta_model) {
+  if (nrow(data) < 2) {
+    return(ggplot() +
+             labs(title = "Radial Plot",
+                  subtitle = "Insufficient data for radial plot") +
+             theme_void() +
+             theme(plot.title = element_text(hjust = 0.5, face = "bold")))
+  }
+  
+  tryCatch({
+    # Prepare data for radial plot
+    plot_data <- data.frame(
+      study = 1:meta_model$k,
+      study_label = data$study_label,
+      precision = 1/sqrt(meta_model$vi),
+      standardized_es = data$effect_size / sqrt(meta_model$vi),
+      weight = weights(meta_model)
+    )
+    
+    # 计算角度来分散标签
+    plot_data$angle <- atan2(plot_data$standardized_es, plot_data$precision) * 180/pi
+    
+    # 根据位置分配标签方向
+    plot_data$label_side <- ifelse(plot_data$standardized_es > 0, "top", "bottom")
+    
+    library(ggrepel)
+    
+    ggplot(plot_data, aes(x = precision, y = standardized_es)) +
+      geom_point(aes(size = weight, fill = weight), 
+                 shape = 21, color = "white", stroke = 0.8) +
+      geom_smooth(method = "lm", se = FALSE, color = "#e74c3c", 
+                  linetype = "dashed", linewidth = 0.8) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "grey", linewidth = 0.5) +
+      # 使用角度优化的标签布局
+      geom_text_repel(
+        aes(label = study_label),
+        size = 3.0,
+        color = "darkblue",
+        fontface = "bold",
+        box.padding = 0.5,
+        point.padding = 0.3,
+        segment.color = "grey50",
+        segment.size = 0.3,
+        min.segment.length = 0.2,
+        max.overlaps = 20,
+        force = 2,
+        direction = "both",
+        # 根据象限调整标签位置
+        nudge_x = ifelse(plot_data$precision > median(plot_data$precision), 0.2, -0.2),
+        nudge_y = ifelse(plot_data$standardized_es > 0, 0.15, -0.15)
+      ) +
+      scale_fill_gradient(low = "lightblue", high = "darkblue", name = "Weight") +
+      scale_size_continuous(range = c(3, 8), name = "Weight") +
+      labs(title = "Radial Plot",
+           subtitle = "Alternative visualization of effect sizes and precision",
+           x = "Precision (1/SE)",
+           y = "Standardized Effect Size") +
+      theme_classic(base_size = 12) +
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+        plot.subtitle = element_text(hjust = 0.5, color = "grey40", size = 11),
+        axis.title = element_text(face = "bold", size = 11),
+        axis.text = element_text(color = "black", size = 10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA)
+      )
+    
+  }, error = function(e) {
+    ggplot() +
+      labs(title = "Radial Plot",
+           subtitle = "Error in generating radial plot") +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  })
+}
+ 
+# ========== 主执行流程 ==========
+```
+
+ 
+
+ 
+
+
+```{r}
+cat("开始生成meta分析图片...\n")
+
+# 读取并准备数据
+cat("1. 读取数据文件...\n")
+raw_data <- read_excel(input_file)
+prepared_data <- prepare_data(raw_data)
+
+cat("2. 运行meta分析...\n")
+meta_model <- run_meta_analysis(prepared_data)
+
+# 生成所有图片
+plots <- list()
+
+# 1. 森林图
+cat("3. 生成森林图...\n")
+forest_plot <- create_forest_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "forest_plot.png"), forest_plot, width = 10, height = 8, dpi = 900)
+plots$forest <- forest_plot
+
+# 2. 漏斗图
+cat("4. 生成漏斗图...\n")
+funnel_result <- create_enhanced_funnel_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "funnel_plot.png"), funnel_result$plot, width = 10, height = 8, dpi = 600)
+plots$funnel <- funnel_result
+
+# 3. 累积meta分析图
+cat("5. 生成累积meta分析图...\n")
+cumulative_plot <- create_cumulative_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "cumulative_plot.png"), cumulative_plot, width = 8, height = 6, dpi = 600)
+plots$cumulative <- cumulative_plot
+
+# 4. 影响分析图
+cat("6. 生成影响分析图...\n")
+influence_plot <- create_influence_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "influence_plot.png"), influence_plot, width = 12, height = 6, dpi = 600)
+plots$influence <- influence_plot
+
+# 5. Baujat图
+cat("7. 生成Baujat图...\n")
+baujat_plot <- create_baujat_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "baujat_plot.png"), baujat_plot, width = 8, height = 6, dpi = 600)
+plots$baujat <- baujat_plot
+
+# 6. 径向图
+cat("8. 生成径向图...\n")
+radial_plot <- create_radial_plot(prepared_data, meta_model)
+ggsave(file.path(output_dir, "radial_plot.png"), radial_plot, width = 8, height = 6, dpi = 600)
+plots$radial <- radial_plot
+
+ 
+
+cat("所有图片生成完成！\n")
+cat("输出目录:", output_dir, "\n")
+
+# 显示meta分析结果摘要
+cat("\n=== META-ANALYSIS RESULTS ===\n")
+cat("Method: REML\n")
+cat("Number of studies:", meta_model$k, "\n")
+cat("Overall effect size:", round(meta_model$b[1], 3), "\n")
+cat("95% CI: [", round(meta_model$ci.lb, 3), ", ", round(meta_model$ci.ub, 3), "]\n", sep = "")
+cat("z-value:", round(meta_model$zval, 3), "\n")
+cat("p-value:", round(meta_model$pval, 4), "\n")
+cat("I² (total heterogeneity):", round(meta_model$I2, 1), "%\n")
+cat("Tau² (between-study variance):", round(meta_model$tau2, 3), "\n")
+
+# 保存分析结果
+results_summary <- list(
+  plots = plots,
+  meta_model = meta_model,
+  data = prepared_data,
+  output_dir = output_dir
+)
+
+# 保存R数据文件
+saveRDS(results_summary, file.path(output_dir, "meta_analysis_results.rds"))
+cat("分析结果已保存到:", file.path(output_dir, "meta_analysis_results.rds"), "\n")
+
+```
+
+
+```{r}
+
+
+```
+

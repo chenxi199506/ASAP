@@ -1,0 +1,928 @@
+---
+title: "figure"
+author: "陈曦"
+date:  "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    self_contained: true
+    thumbnails: true
+    lightbox: true
+    gallery: false
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F,results = "hide",eval = F,warning=FALSE,message=FALSE)
+
+library(rio)
+library(ggplot2)
+library(Seurat)
+library(tidyverse)
+
+sf.rds <- function(variable,file = "viarablename"){
+  dir.create(file)
+  namefile <- gsub(" ","",paste0(file,Sys.time(),".rds"))
+namefile <- gsub(":","",namefile)
+print(variable)
+saveRDS(variable,file = paste0(file,"/",namefile),compress = F)
+output <- paste0("文件 ",namefile,"存储在",file,"文件夹")
+  return(output)
+}
+
+
+sf.csv <- function(variable,vn = "viarablename"){
+  dir.create(vn)
+  namefile <- gsub(" ","",paste0(vn,Sys.time(),".csv"))
+namefile <- gsub(":","",namefile)
+print(variable)
+
+write.csv(variable,file = paste0(vn,"/",namefile))
+
+output <- paste0("文件 ",namefile,"存储在",vn,"文件夹")
+  return(output)
+}
+
+
+colors <- c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+            "#1a1a1a", "#ffcc00", "#a6cee3", "#b2df8a", "#fb9a99",
+            "#fdbf6f", "#cab2d6", "#ffff99", "#1f78b4", "#33a02c",
+            "#6a3d9a", "#b15928", "#1b9e77", "#ff8e00", "#33a02c",
+            "#a6761d", "#e31a1c", "#ff7f00", "#6a3d9a", "#b15928",
+            "#1b9e77", "#ff8e00", "#33a02c", "#a6761d", "#e31a1c",
+            "#ff7f00", "#6a3d9a", "#b15928", "#1b9e77", "#ff8e00","#2b22a4")
+```
+
+
+# Markdown 
+
+### 2. 参考文献匹配函数（简化版）
+
+
+
+```{r}
+library(dplyr)
+library(stringr)
+library(stringdist)
+library(readxl)
+library(purrr)
+library(tidyr)
+
+# 1. 加载金标准数据
+load_ground_truth <- function(file_path) {
+  read_excel(file_path) %>%
+    mutate(reference = as.character(reference))
+}
+
+# 2. 参考文献匹配函数（简化版）
+normalize_reference <- function(ref) {
+  if (is.na(ref) || ref == "") return(list(author = "", year = ""))
+  
+  # 提取年份（4位数字）
+  year <- str_extract(ref, "\\b\\d{4}\\b") %||% ""
+  
+  # 提取作者（移除年份后的部分）
+  author <- str_remove(ref, "\\s*\\(?\\d{4}\\)?\\s*$") %>% 
+    str_trim()
+  
+  list(author = author, year = year)
+}
+
+# 模糊匹配函数
+fuzzy_match_reference <- function(pred_ref, truth_refs, threshold = 0.7) {
+  if (is.na(pred_ref) || pred_ref == "") return(NA)
+  
+  pred_norm <- normalize_reference(pred_ref)
+  
+  best_match <- NULL
+  best_score <- 0
+  
+  for (i in seq_along(truth_refs)) {
+    truth_norm <- normalize_reference(truth_refs[i])
+    
+    # 作者相似度
+    author_sim <- 1 - stringdist::stringdist(
+      tolower(pred_norm$author), 
+      tolower(truth_norm$author),
+      method = "jw"
+    )
+    
+    # 年份匹配
+    year_match <- ifelse(pred_norm$year == truth_norm$year, 1, 0)
+    
+    # 综合评分
+    total_score <- author_sim * 0.7 + year_match * 0.3
+    
+    if (total_score > best_score) {
+      best_score <- total_score
+      best_match <- i
+    }
+  }
+  
+  if (best_score >= threshold) return(best_match)
+  return(NA)
+}
+```
+
+
+### 3. 数字字段比较
+
+```{r}
+compare_numeric <- function(pred, truth, field_name) {
+  # 处理NA和文本型数字
+  pred_num <- extract_number(pred)
+  truth_num <- extract_number(truth)
+  
+  if (is.na(pred_num) || is.na(truth_num)) {
+    return(list(
+      field = field_name,
+      pred = pred,
+      truth = truth,
+      abs_error = NA,
+      rel_error = NA,
+      is_correct = FALSE
+    ))
+  }
+  
+  abs_error <- abs(pred_num - truth_num)
+  rel_error <- ifelse(truth_num != 0, abs_error / truth_num, Inf)
+  
+  # 容错标准：10%相对误差或绝对误差<=5
+  is_correct <- rel_error <= 0.02 | abs_error <= 1
+  
+  list(
+    field = field_name,
+    pred = pred,
+    truth = truth,
+    abs_error = abs_error,
+    rel_error = rel_error,
+    is_correct = is_correct
+  )
+}
+
+extract_number <- function(x) {
+  if (is.na(x)) return(NA)
+  if (is.numeric(x)) return(x)
+  
+  # 提取数字
+  num_str <- str_extract(as.character(x), "\\d+")
+  if (!is.na(num_str)) as.numeric(num_str) else NA
+}
+
+
+
+```
+
+### 4. 文本相似度比较
+
+```{r}
+compare_text <- function(pred, truth, field_name) {
+  if (is.na(pred)) pred <- ""
+  if (is.na(truth)) truth <- ""
+  
+  pred <- as.character(pred) %>% str_trim()
+  truth <- as.character(truth) %>% str_trim()
+  
+  # 空值处理
+  if (pred == "" & truth == "") {
+    return(list(
+      field = field_name,
+      similarity = 1,
+      is_similar = TRUE
+    ))
+  }
+  
+  if (pred == "" | truth == "") {
+    return(list(
+      field = field_name,
+      similarity = 0,
+      is_similar = FALSE
+    ))
+  }
+  
+  # 计算相似度（使用Jaro-Winkler距离）
+  similarity <- 1 - stringdist::stringdist(pred, truth, method = "jw")
+  
+  # 设置阈值（可根据字段类型调整）
+  threshold <- ifelse(field_name %in% c("population", "interventions", "outcomes"), 0.6, 0.7)
+  
+  list(
+    field = field_name,
+    similarity = similarity,
+    is_similar = similarity >= threshold
+  )
+}
+```
+
+
+### 5. AMSTAR比较V2
+
+ 
+
+```{r}
+ 
+compare_amstar <- function(pred_row, truth_row) {
+  amstar_fields <- paste0("amstar_", 1:16)
+  
+  results <- map(amstar_fields, function(field) {
+    pred_val <- normalize_amstar(pred_row[[field]])
+    truth_val <- normalize_amstar(truth_row[[field]])
+    
+    # 修改判断逻辑：当真实值是PY时，预测Y或N都算正确
+    if (truth_val == "PY") {
+      is_correct <- pred_val %in% c("Y", "N")
+    } else {
+      is_correct <- pred_val == truth_val
+    }
+    
+    list(
+      field = field,
+      pred = pred_val,
+      truth = truth_val,
+      is_correct = is_correct
+    )
+  })
+  
+  # 计算总体准确率
+  correct_count <- sum(map_lgl(results, ~ .x$is_correct))
+  total_count <- length(results)
+  
+  # 计算关键指标准确率 (AMSTAR 2, 4, 7, 9, 11, 13, 15)
+  critical_fields <- c("amstar_2", "amstar_4", "amstar_7", "amstar_9", 
+                      "amstar_11", "amstar_13", "amstar_15")
+  
+  # 明确指定非关键指标
+  non_critical_fields <- c("amstar_1", "amstar_3", "amstar_5", "amstar_6", 
+                          "amstar_8", "amstar_10", "amstar_12", "amstar_14", "amstar_16")
+  
+  # 验证字段完整性
+  all_specified_fields <- c(critical_fields, non_critical_fields)
+  if (!setequal(all_specified_fields, amstar_fields)) {
+    warning("指定的关键和非关键字段与AMSTAR 1-16不匹配")
+  }
+  
+  critical_results <- keep(results, ~ .x$field %in% critical_fields)
+  critical_correct_count <- sum(map_lgl(critical_results, ~ .x$is_correct))
+  critical_accuracy <- critical_correct_count / length(critical_fields)
+  
+  # 计算非关键指标准确率
+  non_critical_results <- keep(results, ~ .x$field %in% non_critical_fields)
+  non_critical_correct_count <- sum(map_lgl(non_critical_results, ~ .x$is_correct))
+  non_critical_accuracy <- non_critical_correct_count / length(non_critical_fields)
+  
+  # 计算每个AMSTAR项目的准确率
+  item_accuracy <- map_dbl(amstar_fields, function(field) {
+    field_results <- keep(results, ~ .x$field == field)
+    if (length(field_results) > 0) {
+      mean(map_lgl(field_results, ~ .x$is_correct))
+    } else {
+      0
+    }
+  })
+  names(item_accuracy) <- amstar_fields
+  
+  list(
+    item_results = results,
+    overall_accuracy = correct_count / total_count,
+    critical_accuracy = critical_accuracy,
+    non_critical_accuracy = non_critical_accuracy,
+    correct_count = correct_count,
+    total_count = total_count,
+    critical_correct_count = critical_correct_count,
+    critical_total_count = length(critical_fields),
+    non_critical_correct_count = non_critical_correct_count,
+    non_critical_total_count = length(non_critical_fields),
+    item_accuracy = item_accuracy,
+    critical_fields = critical_fields,
+    non_critical_fields = non_critical_fields
+  )
+}
+
+```
+
+
+### 6. 单个模型评估流程
+
+```{r}
+evaluate_model <- function(model_df, model_name, ground_truth) {
+  # 第一步：参考文献匹配
+  match_results <- map_int(model_df$reference, ~ 
+    fuzzy_match_reference(.x, ground_truth$reference))
+  
+  # 保存匹配结果便于调试
+  match_df <- data.frame(
+    pred_reference = model_df$reference,
+    matched_index = match_results,
+    matched_reference = ifelse(is.na(match_results), NA, 
+                             ground_truth$reference[match_results])
+  )
+  
+  # 只保留成功匹配的记录
+  valid_matches <- which(!is.na(match_results))
+  
+  if (length(valid_matches) == 0) {
+    return(list(
+      model_name = model_name,
+      total_predictions = nrow(model_df),
+      successful_matches = 0,
+      metrics = list()
+    ))
+  }
+  
+  # 初始化结果存储
+  numeric_results <- list()
+  text_results <- list() 
+  amstar_results <- list()
+  confidence_results <- list()
+  
+  # 逐条比较
+  for (i in valid_matches) {
+    pred_row <- model_df[i, ]
+    truth_idx <- match_results[i]
+    truth_row <- ground_truth[truth_idx, ]
+    
+    # 数字字段比较
+    numeric_results <- c(numeric_results, list(
+      compare_numeric(pred_row$studies_n, truth_row$studies_n, "studies_n"),
+      compare_numeric(pred_row$total_sample_n, truth_row$total_sample_n, "total_sample_n")
+    ))
+    
+    # 文本字段比较  
+    text_results <- c(text_results, list(
+      compare_text(pred_row$population, truth_row$population, "population"),
+      compare_text(pred_row$interventions, truth_row$interventions, "interventions"),
+      compare_text(pred_row$outcomes, truth_row$outcomes, "outcomes")
+    ))
+    
+    # AMSTAR比较
+    amstar_results <- c(amstar_results, list(
+      compare_amstar(pred_row, truth_row)
+    ))
+    
+    # 置信度比较
+    confidence_results <- c(confidence_results, list(
+      compare_confidence(pred_row$confidence_rating, truth_row$confidence_rating)
+    ))
+  }
+  
+  # 计算总体指标
+  metrics <- calculate_metrics(
+    numeric_results, text_results, amstar_results, confidence_results,
+    nrow(model_df), length(valid_matches)
+  )
+  
+  # 计算每个AMSTAR项目的平均准确率
+  amstar_fields <- paste0("amstar_", 1:16)
+  amstar_item_accuracy <- map_dbl(amstar_fields, function(field) {
+    field_accuracies <- map_dbl(amstar_results, function(result) {
+      item_result <- keep(result$item_results, ~ .x$field == field)
+      if (length(item_result) > 0) {
+        item_result[[1]]$is_correct
+      } else {
+        FALSE
+      }
+    })
+    mean(field_accuracies)
+  })
+  names(amstar_item_accuracy) <- amstar_fields
+  
+  list(
+    model_name = model_name,
+    total_predictions = nrow(model_df),
+    successful_matches = length(valid_matches),
+    match_details = match_df,
+    numeric_results = numeric_results,
+    text_results = text_results,
+    amstar_results = amstar_results,
+    confidence_results = confidence_results,
+    metrics = metrics,
+    amstar_item_accuracy = amstar_item_accuracy
+  )
+}
+```
+
+
+```{r}
+
+calculate_metrics <- function(numeric_results, text_results, amstar_results, 
+                            confidence_results, total_pred, successful_matches) {
+  
+  # 将数字结果按字段分开
+  studies_results <- keep(numeric_results, ~ .x$field == "studies_n")
+  sample_results <- keep(numeric_results, ~ .x$field == "total_sample_n")
+  
+  # studies_n准确率
+  studies_accuracy <- if (length(studies_results) > 0) {
+    mean(map_lgl(studies_results, ~ .x$is_correct))
+  } else 0
+  
+  # total_sample_n准确率
+  sample_accuracy <- if (length(sample_results) > 0) {
+    mean(map_lgl(sample_results, ~ .x$is_correct))
+  } else 0
+  
+  # 文本字段相似率
+  text_similarity <- if (length(text_results) > 0) {
+    mean(map_lgl(text_results, ~ .x$is_similar))
+  } else 0
+  
+  # AMSTAR总体准确率
+  amstar_accuracy <- if (length(amstar_results) > 0) {
+    mean(map_dbl(amstar_results, ~ .x$overall_accuracy))
+  } else 0
+  
+  # AMSTAR关键指标准确率
+  amstar_critical_accuracy <- if (length(amstar_results) > 0) {
+    mean(map_dbl(amstar_results, ~ .x$critical_accuracy))
+  } else 0
+  
+  # AMSTAR非关键指标准确率
+  amstar_non_critical_accuracy <- if (length(amstar_results) > 0) {
+    mean(map_dbl(amstar_results, ~ .x$non_critical_accuracy))
+  } else 0
+  
+  # 置信度准确率
+  confidence_accuracy <- if (length(confidence_results) > 0) {
+    mean(map_lgl(confidence_results, ~ .x$is_correct))
+  } else 0
+  
+  # 匹配成功率
+  match_success_rate <- successful_matches / total_pred
+  
+  # 综合得分（加权平均）
+  overall_score <- match_success_rate* 0.5+studies_accuracy * 0.25 +  # studies_n权重
+    sample_accuracy * 0.25 +                 # total_sample_n权重
+    text_similarity * 0.00000001 +           # 文本字段权重
+    amstar_accuracy * 0.5 +                 # AMSTAR总体权重
+    amstar_critical_accuracy * 0.25 +        # AMSTAR关键指标权重
+    amstar_non_critical_accuracy * 0.25 + # AMSTAR非关键指标权重
+    confidence_accuracy * 0.00000001         # 置信度权重
+  
+  list(
+    match_success_rate = match_success_rate,
+    studies_accuracy = studies_accuracy,
+    sample_accuracy = sample_accuracy,
+    text_similarity_rate = text_similarity,
+    amstar_accuracy = amstar_accuracy,
+    amstar_critical_accuracy = amstar_critical_accuracy,
+    amstar_non_critical_accuracy = amstar_non_critical_accuracy,
+    confidence_accuracy = confidence_accuracy,
+    overall_score = overall_score
+  )
+}
+
+```
+
+
+ 
+```{r}
+# 修改主函数以输出详细的AMSTAR比较结果
+run_benchmark <- function(ground_truth_file, model_files) {
+  # 加载金标准
+  ground_truth <- load_ground_truth(ground_truth_file)
+  cat("金标准数据加载完成，共", nrow(ground_truth), "条记录\n")
+  
+  # 评估每个模型
+  results <- list()
+  
+  for (model_name in names(model_files)) {
+    cat("正在评估模型:", model_name, "\n")
+    
+    # 加载模型结果
+    model_df <- read.csv(model_files[[model_name]]) %>%
+      mutate(across(everything(), as.character))
+    
+    # 评估模型
+    result <- evaluate_model(model_df, model_name, ground_truth)
+    results[[model_name]] <- result
+    
+    # 打印中间结果
+    cat("  - 匹配成功率:", round(result$metrics$match_success_rate, 3), "\n")
+    cat("  - studies_n准确率:", round(result$metrics$studies_accuracy, 3), "\n")
+    cat("  - sample_n准确率:", round(result$metrics$sample_accuracy, 3), "\n")
+    cat("  - AMSTAR总体准确率:", round(result$metrics$amstar_accuracy, 3), "\n")
+    cat("  - AMSTAR关键指标准确率:", round(result$metrics$amstar_critical_accuracy, 3), "\n")
+    cat("  - AMSTAR非关键指标准确率:", round(result$metrics$amstar_non_critical_accuracy, 3), "\n")
+    cat("  - 综合得分:", round(result$metrics$overall_score, 3), "\n")
+    cat("  - 关键指标数量: 7个 (AMSTAR 2,4,7,9,11,13,15)\n")
+    cat("  - 非关键指标数量: 9个 (AMSTAR 1,3,5,6,8,10,12,14,16)\n")
+  }
+  
+  # 生成最终比较表格
+  summary_df <- purrr::map_dfr(results, function(res) {
+    data.frame(
+      model_name = res$model_name %||% NA,
+      total_predictions = res$total_predictions %||% NA,
+      successful_matches = res$successful_matches %||% NA,
+      match_success_rate = res$metrics$match_success_rate %||% NA,
+      studies_accuracy = res$metrics$studies_accuracy %||% NA,
+      sample_accuracy = res$metrics$sample_accuracy %||% NA,
+      text_similarity_rate = res$metrics$text_similarity_rate %||% NA,
+      amstar_accuracy = res$metrics$amstar_accuracy %||% NA,
+      amstar_critical_accuracy = res$metrics$amstar_critical_accuracy %||% NA,
+      amstar_non_critical_accuracy = res$metrics$amstar_non_critical_accuracy %||% NA,
+      confidence_accuracy = res$metrics$confidence_accuracy %||% NA,
+      overall_score = res$metrics$overall_score %||% NA
+    )
+  })
+  
+  # 生成AMSTAR项目详细准确率表格
+  amstar_fields <- paste0("amstar_", 1:16)
+  amstar_summary <- purrr::map_dfr(results, function(res) {
+    amstar_acc <- res$amstar_item_accuracy
+    if (is.null(amstar_acc)) {
+      amstar_acc <- setNames(rep(NA, 16), amstar_fields)
+    }
+    df <- data.frame(model_name = res$model_name)
+    for (field in amstar_fields) {
+      df[[field]] <- amstar_acc[field] %||% NA
+    }
+    df
+  })
+  
+  list(
+    detailed_results = results,
+    summary = summary_df,
+    amstar_detailed = amstar_summary
+  )
+}
+
+# 使用示例
+model_files <- list(
+  "GPT-4o" = "supplementary\\gpt-4o_results_20250924_100724.csv",
+  "Qwen-2.5" = "supplementary\\qwen-2.5-72b_results_20250924_114809.csv",
+  "Claude-3.5" ="supplementary\\claude-3-5-sonnet_results_20250924_104149.csv",
+  "Mistral-8x22B" ="supplementary\\mixtral-8x22b_results_20250924_112404.csv",
+  "Deepseek-3.1" ="supplementary\\deepseekV3.1_assessment.csv",
+  "Gemini-2.0" ="supplementary\\gemini-2.0-flash-001_results_20250924_181721.csv",
+  "Grok-4" ="supplementary\\grok-4-fast_results_20250924_180705.csv",
+  "Llama-3.3" ="supplementary\\llama-3.3-70b_results_20250924_192439.csv",
+  "Mistral-nemo" ="supplementary\\mistral-nemo_results_20250924_190847.csv",
+  "Qwen-3" ="supplementary\\qwen3-235b_results_20250924_183703.csv" 
+)
+
+benchmark_results <- run_benchmark("goldstandard.xlsx", model_files)
+ 
+allres <- cbind(benchmark_results[[2]],benchmark_results[[3]]) 
+write.csv(allres,file = "benchmarkresults09255.csv")
+```
+
+ 
+ 
+
+### v6
+
+
+```{r}
+
+data <- import("benchmarkresults0925.csv")
+
+data <- data[1:10,] %>% arrange(desc(overall_score))
+# 更新column_info
+column_info <- tibble(
+  id = c("model_name", "Developer", "Release_Year", 
+         "Context_Length_K_tokens", "Total_Parameters_B","avg_response_time", "match_success_rate", "studies_accuracy", 
+         "sample_accuracy", "extract_accuracy", "amstar_non_critical_accuracy",
+         "amstar_critical_accuracy", "amstar_accuracy", "overall_score"),
+  name = c("Model", "Developer", "Release Year", 
+           "Context (K)", "Params (B)", "Response (s)","Match Rate", "Studies Acc", "Sample Acc", 
+           "Extract Acc",  "AMSTAR2 Non-critical", "AMSTAR2 Critical","AMSTAR2 Acc", "Overall Score"),
+  group = c("model", "info", "info" ,"info", "info", "info", "accuracy", "accuracy", "accuracy", 
+            "accuracy", "accuracy", "accuracy", "accuracy", "overall"),
+  width = c(2, 2, 1, 1, 1, 1, 1.2, 1.2, 1.2, 1.2, 1.5,1.5, 1.5, 1.5)
+)
+
+row_info <- tibble(
+  id = data$model_name,
+  group = "LLM Evaluation"
+)
+
+# 调色板配置
+palettes <- list(
+  accuracy = "Blues",
+  overall = "RdYlBu",
+  info = "Greys"  # 基本信息列使用灰色调
+)
+```
+
+ 
+
+```{r}
+
+create_enhanced_model_plot <- function(data, column_info, row_info, palettes) {
+  
+  # 设置尺寸参数 - 与原始风格一致
+  row_height <- 1.1
+  row_space <- 0.1
+  col_width <- 1.1
+  col_space <- 0.2
+  col_bigspace <- 0.5
+  
+  # 计算行位置
+  row_pos <- row_info %>%
+    mutate(
+      row_i = row_number(),
+      colour_background = row_i %% 2 == 1,
+      y = -row_i * (row_height + row_space),
+      ymin = y - row_height / 2,
+      ymax = y + row_height / 2
+    )
+  
+  # 计算列位置
+  column_pos <- column_info %>%
+    mutate(
+      x = cumsum(c(0, head(width, -1)) + width/2 + c(0, rep(col_space, n()-1))),
+      xmin = x - width/2,
+      xmax = x + width/2
+    )
+  
+  # 定义指标分组和颜色映射
+  metric_groups <- list(
+    group1 = list(
+      circle_metrics = c("avg_response_time"),
+      bar_metrics = c("match_success_rate"),  # 条形图版本
+      color_palette = "Blues",
+      group_name = "匹配性能"
+    ),
+    group2 = list(
+      circle_metrics = c("studies_accuracy", "sample_accuracy"),
+      bar_metrics = c("extract_accuracy"),
+      color_palette = "Greens", 
+      group_name = "研究准确性"
+    ),
+    group3 = list(
+      circle_metrics = c("amstar_non_critical_accuracy", "amstar_critical_accuracy"),
+      bar_metrics = c("amstar_accuracy"),
+      color_palette = "Purples",
+      group_name = "AMSTAR2 评估"
+    ),
+    group4 = list(
+      circle_metrics = c(),
+      bar_metrics = c("overall_score"),
+      color_palette = "RdYlBu",
+      group_name = "综合评分"
+    )
+  )
+  
+  # 创建圆形数据
+  circle_data_list <- list()
+  for(group_name in names(metric_groups)) {
+    group <- metric_groups[[group_name]]
+    palette_name <- group$color_palette
+    
+    for(metric in group$circle_metrics) {
+          print(metric)
+      values <- data[[metric]]
+      # 使用原始风格的圆形大小计算
+      r_values <- row_height/2 * sqrt(values)
+      r_values <- rescale(r_values, to = c(0.05, 0.55))
+      
+      # 使用组特定的颜色映射
+      palette_colors <- colorRampPalette(rev(brewer.pal(9, palette_name)))(length(values))
+      colors <- palette_colors[rank(values, ties.method = "average", na.last = "keep")]
+      
+      circle_data_list[[paste(metric, group_name)]] <- data.frame(
+        model_name = data$model_name,
+        metric = metric,
+        group = group_name,
+        x0 = column_pos$x[column_pos$id == metric],
+        y0 = row_pos$y[match(data$model_name, row_pos$id)],
+        r = r_values,
+        colors = colors,
+        stringsAsFactors = FALSE
+      ) %>% as_tibble()
+    }
+  }
+  circle_data <- bind_rows(circle_data_list)
+  
+  # 创建条形数据
+  rect_data_list <- list()
+  for(group_name in names(metric_groups)) {
+    group <- metric_groups[[group_name]]
+    palette_name <- group$color_palette
+    
+    for(metric in group$bar_metrics) {
+      values <- data[[metric]]
+      palette_colors <- colorRampPalette(rev(brewer.pal(9, palette_name)))(length(values))
+      bar_colors <- palette_colors[rank(values, ties.method = "average", na.last = "keep")]
+      
+      rect_data_list[[metric]] <- data.frame(
+        model_name = data$model_name,
+        metric = metric,
+        group = group_name,
+        value = values,
+        xmin = column_pos$xmin[column_pos$id == metric],
+        xmax = column_pos$xmax[column_pos$id == metric],
+        ymin = row_pos$ymin[match(data$model_name, row_pos$id)] + 0.1,
+        ymax = row_pos$ymax[match(data$model_name, row_pos$id)] - 0.1,
+        colors = bar_colors,
+        stringsAsFactors = FALSE
+      ) %>% as_tibble()
+    }
+  }
+  rect_data <- bind_rows(rect_data_list)
+  
+  # 创建基本信息文本数据
+  text_metrics <- c("Developer", "Release_Year", "Total_Parameters_B", "Context_Length_K_tokens")
+  
+  text_data_list <- list()
+  
+  for(metric in text_metrics) {
+    values <- data[[metric]]
+    print(metric)
+    text_data_list[[metric]] <- data.frame(
+      model_name = data$model_name,
+      metric = metric,
+      x = column_pos$x[column_pos$id == metric],
+      y = row_pos$y[match(data$model_name, row_pos$id)],
+      label = as.character(values),
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "plain",
+      size = 3,
+      color = "black",
+      stringsAsFactors = FALSE
+    ) %>% as_tibble()
+  }
+  text_data <- bind_rows(text_data_list)
+  
+  # 模型名称文本
+  model_text_data <- data.frame(
+    x = column_pos$xmin[column_pos$id == "model_name"] + 0.3,
+    y = row_pos$y,
+    label = data$model_name,
+    hjust = 0,
+    fontface = "bold",
+    size = 3.5,
+    color = "black",
+    stringsAsFactors = FALSE
+  ) %>% as_tibble()
+  
+  # 添加排名文本
+  rank_data <- data.frame(
+    x = column_pos$xmin[column_pos$id == "model_name"] - 0.5,
+    y = row_pos$y,
+    label = 1:nrow(data),
+    hjust = 0.5,
+    fontface = "bold",
+    size = 4,
+    color = "black",
+    stringsAsFactors = FALSE
+  ) %>% as_tibble()
+  
+  # 列标题
+  column_text <- column_pos %>%
+    filter(id != "model_name") %>%
+    mutate(
+      y = max(row_pos$ymax) + 1.2,
+      label = name,
+      angle = 0,
+      hjust = 0.5,
+      vjust = 0.5,
+      fontface = "bold",
+      size = 3.2,
+      color = "black"
+    )
+  
+  # 添加组标题
+  group_header_data <- data.frame()
+  for(group_name in names(metric_groups)) {
+    group <- metric_groups[[group_name]]
+    group_metrics <- c(group$circle_metrics, group$bar_metrics)
+    
+    if(length(group_metrics) > 0) {
+      group_xmin <- min(column_pos$xmin[column_pos$id %in% group_metrics])
+      group_xmax <- max(column_pos$xmax[column_pos$id %in% group_metrics])
+      
+      group_header <- data.frame(
+        x = (group_xmin + group_xmax) / 2,
+        y = max(row_pos$ymax) + 2.0,
+        label = group$group_name,
+        hjust = 0.5,
+        vjust = 0.5,
+        fontface = "bold",
+        size = 3.5,
+        color = "black"
+      )
+      group_header_data <- bind_rows(group_header_data, group_header)
+    }
+  }
+  
+  # 列标题下方的刻度线
+  segment_data <- column_pos %>%
+    filter(id != "model_name") %>%
+    mutate(
+      y = max(row_pos$ymax) + 0.8,
+      yend = max(row_pos$ymax) + 1.0,
+      color = "black",
+      size = 0.5
+    )
+  
+  # 创建图表
+  g <- ggplot() +
+    # 背景色带 - 使用原始风格的灰色
+    geom_rect(
+      data = row_pos %>% filter(colour_background),
+      aes(xmin = min(column_pos$xmin) - 0.3, xmax = max(column_pos$xmax) + 0.3,
+          ymin = ymin, ymax = ymax),
+      fill = "#DDDDDD", alpha = 0.8
+    ) +
+    
+    # 条形图
+    geom_rect(
+      data = rect_data,
+      aes(xmin = xmin, xmax = xmin + value * (xmax - xmin), 
+          ymin = ymin, ymax = ymax, fill = colors),
+      color = "black", size = 0.25
+    ) +
+    
+    # 圆形图
+    ggforce::geom_circle(
+      data = circle_data,
+      aes(x0 = x0, y0 = y0, r = r, fill = colors),
+      color = "black", size = 0.25
+    ) +
+    
+    # 基本信息文本
+    geom_text(
+      data = text_data,
+      aes(x = x, y = y, label = label, hjust = hjust, vjust = vjust),
+      fontface = "plain", size = 3, color = "black"
+    ) +
+    
+    # 排名数字
+    geom_text(
+      data = rank_data,
+      aes(x = x, y = y, label = label, hjust = hjust),
+      fontface = "bold", size = 4, color = "black"
+    ) +
+    
+    # 模型名称
+    geom_text(
+      data = model_text_data,
+      aes(x = x, y = y, label = label, hjust = hjust),
+      fontface = "bold", size = 3.5, color = "black"
+    ) +
+    
+    # 列标题
+    geom_text(
+      data = column_text,
+      aes(x = x, y = y, label = label, hjust = hjust, vjust = vjust),
+      fontface = "bold", size = 3.2, color = "black"
+    ) +
+    
+    # 组标题
+    geom_text(
+      data = group_header_data,
+      aes(x = x, y = y, label = label, hjust = hjust, vjust = vjust),
+      fontface = "bold", size = 3.5, color = "black"
+    ) +
+    
+    # 刻度线
+    geom_segment(
+      data = segment_data,
+      aes(x = x, xend = x, y = y, yend = yend),
+      size = 0.5, color = "black"
+    ) +
+    
+    # 使用identity scales
+    scale_fill_identity() +
+    scale_color_identity() +
+    scale_size_identity() +
+    
+    # 主题设置 - 使用原始风格的主题
+    theme_void() +
+    theme(
+      legend.position = "none",
+      plot.margin = margin(1, 1, 2, 1, "cm"),
+      panel.background = element_rect(fill = "white", color = NA)
+    ) +
+    
+    # 坐标限制
+    coord_equal(
+      xlim = c(min(column_pos$xmin) - 1, max(column_pos$xmax) + 0.5),
+      ylim = c(min(row_pos$ymin) - 0.5, max(row_pos$ymax) + 3.0)  # 增加空间容纳组标题
+    )
+  
+  return(g)
+}
+
+
+```
+
+```{r}
+plot <- create_enhanced_model_plot(data, column_info, row_info, palettes)
+print(plot)
+ 
+ggsave("model_comparison_high_res.png", plot, 
+       width =20, height = 7, dpi = 300, 
+       bg = "white")
+ 
+# 添加精确到秒的时间戳
+filename <- paste0("model_comparison_high_res_", format(Sys.time(), "%Y%m%d_%H%M%S"), ".png")
+ggsave(filename, plot, 
+       width = 14, height = 7, dpi = 1900, 
+       bg = "white")
+filename
+```
+

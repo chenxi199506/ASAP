@@ -1,0 +1,1676 @@
+---
+title: "Untitled"
+output: html_document
+date: "2025-09-26"
+---
+
+```{r}
+
+umar_data_clean <- readRDS("../UMAR/umar_data_clean0926.rds")
+
+umar_data_clean$Clinical_Department <- gsub("[/,;].*", "",
+                                            umar_data_clean$Clinical_Department)
+
+
+umar_data_clean$Effect_Direction <- gsub("Beneficial","Negative",umar_data_clean$Effect_Direction )
+umar_data_clean$Effect_Direction <- gsub("Harmful","Positive",umar_data_clean$Effect_Direction )
+
+umar_data_clean$Effect_Direction
+
+saveRDS(umar_data_clean,file = "umar_data_clean0927.rds")
+  
+```
+
+# 统计描述可视化 
+
+## 1增强版的ggplot条形图
+
+
+```{r,fig.height=5,fig.width=7,result="hide"}
+
+# 增强版的科室统计，包含中位数和四分位数
+department_summary_enhanced <- umar_data_clean %>%
+  group_by(Clinical_Department) %>%
+  summarise(
+    Count = n(),
+    # 样本量统计
+    Avg_Sample_Size = mean(Total_Sample_Size, na.rm = TRUE),
+    Median_Sample_Size = median(Total_Sample_Size, na.rm = TRUE),
+    Q1_Sample_Size = quantile(Total_Sample_Size, 0.25, na.rm = TRUE),
+    Q3_Sample_Size = quantile(Total_Sample_Size, 0.75, na.rm = TRUE),
+    # 研究数量统计
+    Avg_Num_Studies = mean(Num_Studies, na.rm = TRUE),
+    Median_Num_Studies = median(Num_Studies, na.rm = TRUE),
+    Q1_Num_Studies = quantile(Num_Studies, 0.25, na.rm = TRUE),
+    Q3_Num_Studies = quantile(Num_Studies, 0.75, na.rm = TRUE),
+    # 显著性比例
+    Sig_Proportion = mean(P_Value < 0.05, na.rm = TRUE) * 100
+  ) %>%
+  arrange(desc(Count))
+
+# 查看完整统计结果
+print(department_summary_enhanced)
+
+# 如果觉得y轴文字还是太小，可以使用这个版本（更大的字体）
+p_department_bar_large_font <- department_summary_enhanced %>%
+  head(40) %>%
+  ggplot(aes(x = reorder(Clinical_Department, Count), y = Count)) +
+  geom_col(aes(fill = Count), alpha = 0.8, show.legend = FALSE) +
+  geom_text(aes(label = Count), hjust = -0.3, size = 3, color = "darkblue", family = "Arial") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  coord_flip() +
+  labs(title = "Distribution of Meta-analyses by Clinical Department",
+       x = "Clinical Department",
+       y = "Number of Meta-analyses") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5, family = "Arial"),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50", family = "Arial"),
+    # 增大y轴文字大小
+    axis.text.y = element_text(size = 11, color = "black", family = "Arial", face = "bold"),
+    axis.text.x = element_text(size = 11, color = "black", family = "Arial"),
+    axis.title.y = element_text(size = 12, color = "black", family = "Arial", face = "bold"),
+    axis.title.x = element_text(size = 12, color = "black", family = "Arial", face = "bold"),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    text = element_text(family = "Arial")
+  )
+
+print(p_department_bar_large_font)
+ggsave("p_department_bar_large_font.png", p_department_bar_large_font, width = 8, height = 8, dpi = 900,bg = "white")
+
+
+```
+
+
+## 2气泡图
+
+```{r,fig.height=8,fig.width=10,result="hide"}
+
+p_bubble_chart_log <- department_summary_enhanced %>%
+  head(400) %>%
+  ggplot(aes(x = Median_Num_Studies, y = Median_Sample_Size, size = Count)) +
+  geom_point(aes(color = Sig_Proportion), alpha = 0.7) +
+  ggrepel::geom_text_repel(
+    aes(label = Clinical_Department), 
+    size = 3, 
+    max.overlaps = 20,
+    box.padding = 0.5,
+    force = 1
+  ) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_size_continuous(
+    name = "Number of Meta-analyses",
+    range = c(3, 12),
+    breaks = pretty(department_summary_enhanced$Count[1:20], n = 5)
+  ) +
+  scale_color_gradient(
+    name = "Significant Proportion (%)",
+    low = "lightblue", 
+    high = "darkblue",
+    breaks = seq(0, 100, by = 20)
+  ) +
+  labs(
+    title = "Relationship between Median Sample Size and Median Number of Studies",
+    subtitle = "Top 400 Clinical Departments (Log10 Scale) | UMAR Database (n > 200,000 Meta-analyses)",
+    x = "Median Number of Studies per Meta-analysis (Log10)",
+    y = "Median Sample Size per Meta-analysis (Log10)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray50"),
+    axis.title = element_text(size = 11, face = "bold")
+  )+theme(
+  plot.title    = element_text(size = 16, face = "bold", hjust = 0.5),
+  plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50"),
+  axis.text.y   = element_text(size = 10),
+  axis.text.x   = element_text(size = 10),
+  panel.grid    = element_blank()          # ← 关键：全部网格线消失
+)
+
+print(p_bubble_chart_log)
+
+```
+```{r,fig.height=8,fig.width=10,result="hide"}
+
+p_bubble_chart_log <- department_summary_enhanced %>%
+  head(400) %>%
+  ggplot(aes(x = Median_Num_Studies, y = Median_Sample_Size, size = Count)) +
+  geom_point(aes(color = Sig_Proportion), alpha = 0.7) +
+  # 添加红色虚线拟合线
+  geom_smooth(
+    method = "lm", 
+    se = FALSE, 
+    color = "red", 
+    linetype = "dashed",
+    aes(group = 1)  # 确保所有点被当作一个组来拟合
+  ) +
+  ggrepel::geom_text_repel(
+    aes(label = Clinical_Department), 
+    size = 3, 
+    max.overlaps = 20,
+    box.padding = 0.5,
+    force = 1
+  ) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_size_continuous(
+    name = "Number of Meta-analyses",
+    range = c(3, 12),
+    breaks = pretty(department_summary_enhanced$Count[1:20], n = 5)
+  ) +
+  scale_color_gradient(
+    name = "Significant Proportion (%)",
+    low = "lightblue", 
+    high = "darkblue",
+    breaks = seq(0, 100, by = 20)
+  ) +
+  labs(
+    title = "Relationship between Median Sample Size and Median Number of Studies",
+    subtitle = "Top 400 Clinical Departments (Log10 Scale) | UMAR Database (n > 200,000 Meta-analyses)",
+    x = "Median Number of Studies per Meta-analysis (Log10)",
+    y = "Median Sample Size per Meta-analysis (Log10)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray50"),
+    axis.title = element_text(size = 11, face = "bold")
+  ) + theme(
+    plot.title    = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50"),
+    axis.text.y   = element_text(size = 10),
+    axis.text.x   = element_text(size = 10),
+    panel.grid    = element_blank()
+  )
+
+print(p_bubble_chart_log)
+
+```
+## 3双重分面：Clinical_Department和Disease
+
+```{r,fig.height=12,fig.width=20,result="hide"}
+
+# 双重分组统计：按Clinical_Department和Disease分组
+department_disease_summary <- umar_data_clean %>%
+  group_by(Clinical_Department, Disease) %>%
+  summarise(
+    Count = n(),
+    Avg_Sample_Size = mean(Total_Sample_Size, na.rm = TRUE),
+    Median_Sample_Size = median(Total_Sample_Size, na.rm = TRUE),
+    Avg_Num_Studies = mean(Num_Studies, na.rm = TRUE),
+    Median_Num_Studies = median(Num_Studies, na.rm = TRUE),
+    Sig_Proportion = mean(P_Value < 0.05, na.rm = TRUE) * 100,
+    .groups = 'drop'
+  )
+
+# 获取前16个Clinical_Department
+top_departments <- department_summary_enhanced %>%
+  head(9) %>%
+  pull(Clinical_Department)
+
+# 在每个前16个科室中获取前20个疾病
+top_diseases_by_department <- department_disease_summary %>%
+  filter(Clinical_Department %in% top_departments) %>%
+  group_by(Clinical_Department) %>%
+  slice_max(Count, n = 10) %>%
+  ungroup()
+
+# 1. 分面条形图
+p_facet_bar <- top_diseases_by_department %>%
+  ggplot(aes(x = reorder(Disease, Count), y = Count)) +
+  geom_col(aes(fill = Count), alpha = 0.8, show.legend = FALSE) +
+  geom_text(aes(label = Count), hjust = -0.1, size = 2.5, color = "darkblue") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  coord_flip() +
+  facet_wrap(~ Clinical_Department, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Top 10 Diseases by Clinical Department",
+    subtitle = "Distribution of Meta-analyses across Diseases within Top 9 Clinical Departments",
+    x = "Disease",
+    y = "Number of Meta-analyses"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50"),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text(size = 8),
+    strip.text = element_text(size = 9, face = "bold"),
+    panel.grid = element_blank(),
+    panel.spacing = unit(1, "lines")
+  )
+
+print(p_facet_bar)
+
+# 2. 分面气泡图
+p_facet_bubble <- top_diseases_by_department %>%
+  ggplot(aes(x = Median_Num_Studies, y = Median_Sample_Size, size = Count)) +
+  geom_point(aes(color = Sig_Proportion), alpha = 0.7) +
+  geom_smooth(
+    method = "lm", 
+    se = FALSE, 
+    color = "red", 
+    linetype = "dashed",
+    aes(group = 1),
+    size = 0.5
+  ) +
+  ggrepel::geom_text_repel(
+    aes(label = Disease), 
+    size = 2, 
+    max.overlaps = 10,
+    box.padding = 0.3,
+    force = 0.5
+  ) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_size_continuous(
+    name = "Number of Meta-analyses",
+    range = c(2, 8),
+    breaks = pretty(top_diseases_by_department$Count, n = 3)
+  ) +
+  scale_color_gradient(
+    name = "Significant Proportion (%)",
+    low = "lightblue", 
+    high = "darkblue",
+    breaks = seq(0, 100, by = 25)
+  ) +
+  facet_wrap(~ Clinical_Department, scales = "free", ncol = 3) +
+  labs(
+    title = "Relationship between Median Sample Size and Median Number of Studies by Disease",
+    subtitle = "Top 10 Diseases within Top 9 Clinical Departments (Log10 Scale)",
+    x = "Median Number of Studies per Meta-analysis (Log10)",
+    y = "Median Sample Size per Meta-analysis (Log10)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 10, hjust = 0.5, color = "gray50"),
+    axis.title = element_text(size = 9, face = "bold"),
+    axis.text = element_text(size = 7),
+    strip.text = element_text(size = 8, face = "bold"),
+    panel.grid = element_blank(),
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    # 添加外框线
+    panel.border = element_rect(color = "gray50", fill = NA, linewidth = 0.5)
+  )
+
+print(p_facet_bubble)
+print(p_facet_bubble)
+
+# 如果需要保存图片
+ggsave("department_disease_facet_bar3.png", p_facet_bar, width = 13, height = 10, dpi = 900,bg = "white")
+ggsave("department_disease_facet_bubble3.png", p_facet_bubble, width = 13, height = 10, dpi = 900,bg = "white")
+
+
+```
+
+
+## 4漏斗图
+
+```{r,fig.height=12,fig.width=20,result="hide"}
+
+plot_funnel <- function(data, top_departments = 9, remove_outliers = TRUE, outlier_threshold = 0.95) {
+  top_depts <- data %>%
+    count(Clinical_Department, sort = TRUE) %>%
+    head(top_departments) %>%
+    pull(Clinical_Department)
+  
+  plot_data <- data %>%
+    filter(Clinical_Department %in% top_depts) %>%
+    filter(!is.na(CI_Width) & CI_Width > 0)
+  
+  # 处理离群值
+  if (remove_outliers) {
+    effect_quantiles <- quantile(plot_data$Effect_Size, 
+                                probs = c(outlier_threshold, 1 - outlier_threshold), 
+                                na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[2] & Effect_Size <= effect_quantiles[1])
+  }
+  
+  # 确保x轴以0为中心
+  x_range <- max(abs(plot_data$Effect_Size), na.rm = TRUE)
+  x_limits <- c(-x_range, x_range)
+  
+  p <- ggplot(plot_data, aes(x = Effect_Size, y = 1/CI_Width)) +
+    geom_point(aes(color = Effect_Direction), alpha = 0.7, size = 2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    facet_wrap(~Clinical_Department, scales = "free") +
+    labs(
+      title = "Funnel Plots by Clinical Department",
+      subtitle = paste("Top", top_departments, "Departments by Number of Studies"),
+      x = "Effect Size",
+      y = "Precision (1/CI Width)",
+      caption = paste("Total studies shown:", nrow(plot_data))
+    ) +
+    scale_color_manual(
+      values = c(
+        "Negative" = "#313695",  # 蓝色调
+        "Positive" = "#A50026",     # 红色调  
+        "Not Significant" = "#7f7f7f"  # 中性灰色
+      ),
+      name = "Effect Direction"
+    ) +
+    scale_x_continuous(limits = x_limits) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+      plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50", margin = margin(b = 15)),
+      plot.caption = element_text(size = 10, color = "gray60", margin = margin(t = 10)),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10),
+      # 去掉小图标签框的样式
+      strip.background = element_blank(),  # 去掉背景
+      strip.text = element_text(face = "plain", size = 10),  # 普通字体，不加粗
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      plot.background = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold")
+    )
+  
+  return(p)
+}
+
+# 定义配色方案
+palettes <- list(
+  accuracy = "Blues",
+  overall = "RdYlBu", 
+  info = "Greys"
+)
+p_facet_funnel<- plot_funnel(umar_data_clean)
+p_facet_funnel
+ggsave("department_disease_facet_funnel2.png", p_facet_funnel, width = 7, height = 7, dpi = 900,bg = "white")
+ 
+```
+
+
+
+## 5效应量气泡图
+
+```{r,fig.height=12,fig.width=20,result="hide"}
+
+plot_significance_bubble_faceted <- function(data, sample_size = 800, remove_outliers = TRUE, outlier_threshold = 0.95) {
+  set.seed(123)
+  
+  # 选择研究数量最多的几个科室
+  top_departments <- data %>%
+    count(Clinical_Department, sort = TRUE) %>%
+    head(16) %>%
+    pull(Clinical_Department)
+  
+  plot_data <- data %>%
+    filter(Clinical_Department %in% top_departments)
+  
+  if (nrow(plot_data) > sample_size) {
+    # 按科室分层抽样
+    plot_data <- plot_data %>%
+      group_by(Clinical_Department) %>%
+      sample_n(min(150, n())) %>%
+      ungroup()
+  }
+  
+  # 处理离群值
+  if (remove_outliers) {
+    effect_quantiles <- quantile(plot_data$Effect_Size, 
+                                probs = c(outlier_threshold, 1 - outlier_threshold), 
+                                na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[2] & Effect_Size <= effect_quantiles[1])
+  }
+  
+  plot_data <- plot_data %>%
+    mutate(
+      logP = -log10(pmax(P_Value, 1e-10)),
+      logP = pmin(logP, 8),
+      Effect_Size_trimmed = case_when(
+        Effect_Size > 5 ~ 5,
+        Effect_Size < -5 ~ -5,
+        TRUE ~ Effect_Size
+      )
+    ) %>%
+    filter(!is.na(Effect_Size) & !is.na(logP))
+  
+  # 确保x轴以0为中心
+  x_range <- max(abs(plot_data$Effect_Size_trimmed), na.rm = TRUE)
+  x_limits <- c(-x_range, x_range)
+  
+  p <- ggplot(plot_data, aes(x = Effect_Size_trimmed, y = logP)) +
+    geom_point(aes(size = pmin(Total_Sample_Size, 50000), color = Effect_Direction), 
+               alpha = 0.7) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", 
+               color = "red", linewidth = 0.6) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    facet_wrap(~Clinical_Department, ncol = 4) +
+    coord_cartesian(ylim = c(0, 6)) +
+    labs(
+      title = "Association Strength and Statistical Significance Across Clinical Departments",
+      subtitle = paste("Top 16 Departments by Number of Studies"),
+      x = "Effect Size",
+      y = "-log10(P-value)",
+      caption = paste("Total studies shown:", nrow(plot_data), "| Dashed line: p = 0.05 significance threshold")
+    ) +
+    scale_color_manual(
+      values = c(
+        "Negative" = "#313695",  # 蓝色调
+        "Positive" = "#A50026",     # 红色调  
+        "Not Significant" = "#7f7f7f"  # 中性灰色
+      ),
+      name = "Effect Direction"
+    ) +
+    scale_size_continuous(
+      range = c(1, 4),
+      name = "Sample Size",
+      breaks = c(1000, 10000, 30000),
+      labels = c("1k", "10k", "30k+")
+    ) +
+    scale_x_continuous(limits = x_limits) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+      plot.subtitle = element_text(size = 12, hjust = 0.5, color = "gray50", margin = margin(b = 15)),
+      plot.caption = element_text(size = 10, color = "gray60", margin = margin(t = 10)),
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10),
+      # 为每个子图添加边框
+      panel.border = element_rect(color = "gray70", fill = NA, linewidth = 0.5),
+      strip.background = element_blank(),
+      strip.text = element_text(face = "plain", size = 10),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank(),
+      plot.background = element_blank(),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold"),
+      legend.box = "horizontal",
+      legend.margin = margin(t = 5)
+    )
+  
+  return(p)
+}
+
+ 
+
+ 
+
+
+
+ 
+p_facet_bubble_effect <- plot_significance_bubble_faceted(umar_data_clean)
+p_facet_bubble_effect
+ggsave("plot_significance_bubble_facetedeffect.png", p_facet_bubble_effect, width = 9, height = 9, dpi = 900,bg = "white")
+
+```
+
+# 文献计量
+
+## 测试
+
+```{r}
+
+# 安装必要的包
+install.packages(c("bibliometrix", "tidyverse", "wordcloud2", "igraph", 
+                   "countrycode", "ggplot2", "tm", "SnowballC"))
+                   
+# 加载包
+library(bibliometrix)
+library(tidyverse)
+library(wordcloud2)
+library(igraph)
+library(countrycode)
+library(ggplot2)
+
+# 加载您的数据
+# 假设您的数据框叫 filtdata_unique
+data <- filtdata_unique
+# 查看数据结构
+str(data)
+summary(data)
+
+# 检查PMID唯一性
+cat("唯一PMID数量:", length(unique(data$PMID)), "\n")
+cat("总记录数:", nrow(data), "\n")
+
+# 检查缺失值
+sapply(data, function(x) sum(is.na(x)))
+
+# 从Literature_Abbreviation中提取年份
+data$Year <- str_extract(data$Literature_Abbreviation, "\\d{4}")
+
+```
+```{r}
+
+# 从疾病描述中提取关键词
+library(tm)
+library(SnowballC)
+
+# 创建语料库
+corpus <- Corpus(VectorSource(data$Disease))
+corpus <- tm_map(corpus, content_transformer(tolower))
+corpus <- tm_map(corpus, removePunctuation)
+corpus <- tm_map(corpus, removeNumbers)
+corpus <- tm_map(corpus, removeWords, stopwords("english"))
+corpus <- tm_map(corpus, stripWhitespace)
+
+# 创建词项文档矩阵
+dtm <- TermDocumentMatrix(corpus)
+matrix <- as.matrix(dtm)
+words <- sort(rowSums(matrix), decreasing = TRUE)
+word_freq <- data.frame(word = names(words), freq = words)
+
+# 生成词云
+wordcloud2(word_freq[1:100, ], size = 1.5, color = "random-dark")
+```
+
+
+```{r}
+# Step 1: Prune the network
+dept_disease_network <- data %>%
+  count(Clinical_Department, Disease) %>%
+  filter(n > 2)  # Adjust threshold based on actual data
+
+# Step 2: Create network
+g <- graph_from_data_frame(dept_disease_network, directed = FALSE)
+
+# Step 3: Remove isolated nodes (degree = 0)
+g <- delete_vertices(g, which(degree(g) == 0))
+
+# Step 4: Further pruning if network is still too large
+if(vcount(g) > 50) {
+  high_degree <- degree(g) > quantile(degree(g), 0.7)
+  g <- induced_subgraph(g, high_degree)
+}
+
+# Step 5: Create visualization with ggraph
+library(ggraph)
+library(RColorBrewer)
+library(scales)
+
+# Create node type classification
+node_types <- ifelse(V(g)$name %in% dept_disease_network$Clinical_Department, 
+                    "Clinical Department", "Disease")
+
+# Create color palette for edge weights
+edge_colors <- colorRampPalette(brewer.pal(11, "RdYlBu"))(100)[1:50]
+
+# Generate the network plot
+web <- ggraph(g, layout = "fr") +
+  # Edges with gradient coloring based on connection strength
+  geom_edge_link(aes(width = n, color = n), alpha = 0.7) +
+  scale_edge_width_continuous(range = c(0.5, 3), name = "Connection Strength") +
+  scale_edge_color_gradientn(colors = edge_colors, name = "Connection Strength") +
+  
+  # Nodes with specified colors
+  geom_node_point(aes(color = node_types, size = degree(g)), alpha = 0.8) +
+  scale_color_manual(values = c("Clinical Department" = "#313695", 
+                               "Disease" = "#A50026"),
+                    name = "Node Type") +
+  scale_size_continuous(range = c(3, 8), name = "Node Degree") +
+  
+  # Node labels
+  geom_node_text(aes(label = name), repel = TRUE, size = 2.5, 
+                 max.overlaps = 15, box.padding = 0.3) +
+  
+  # Theme and labels
+  theme_void() +
+  labs(title = "Clinical Department-Disease Network",
+       subtitle = paste("Network with", vcount(g), "nodes and", ecount(g), "edges")) +
+  theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        plot.subtitle = element_text(hjust = 0.5, size = 10, color = "gray30"),
+        legend.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 9))
+
+web
+ggsave("plot_web2.png", web, width = 6, height =6, dpi = 900,bg = "white")
+
+```
+ 
+ 
+# 6 整体漏斗图
+
+
+
+
+```{r}
+
+library(ggExtra)
+
+plot_funnel_marginal <- function(data, remove_outliers = TRUE, outlier_threshold = 0.95) {
+  
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0)
+  
+  # 处理离群值 - 横轴和纵轴都处理
+  if (remove_outliers) {
+    # 横轴（效应值）离群值
+    effect_quantiles <- c(-6,7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  x_range <- max(abs(plot_data$Effect_Size), na.rm = TRUE)
+  x_limits <- c(-x_range, x_range)
+  
+  p <- ggplot(plot_data, aes(x = Effect_Size, y = 1/CI_Width)) +
+    geom_point(aes(color = Effect_Direction), alpha = 0.4, size = 1.2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+    labs(
+      title = "Funnel Plot with Marginal Distributions",
+      x = "Effect Size",
+      y = "Precision (1/CI Width)"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Negative" = "#313695",
+        "Positive" = "#A50026",
+        "Not Significant" = "#7f7f7f"
+      ),
+      name = "Effect Direction"
+    ) +
+    scale_x_continuous(limits = x_limits) +
+    theme_minimal()  +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      axis.title = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold"),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA)
+    )
+  
+  
+  # 添加边缘直方图
+  p_marginal <- ggExtra::ggMarginal(p, type = "histogram", fill = "darkblue", alpha = 0.7)
+  
+  return(p_marginal)
+}
+
+p_marginal <- plot_funnel_marginal(umar_data_clean)
+p_marginal
+
+```
+```{r,fig.height=8,fig.width=6,result="hide"}
+plot_funnel_marginal <- function(data, remove_outliers = TRUE, precision_threshold = 0.95) {
+  
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0)
+  
+  # 处理离群值 - 横轴和纵轴都处理
+  if (remove_outliers) {
+    # 横轴（效应值）离群值 - 使用固定范围
+    effect_quantiles <- c(-6, 7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  x_range <- max(abs(plot_data$Effect_Size), na.rm = TRUE)
+  x_limits <- c(-x_range, x_range)
+  
+  # 创建基础图形
+  p <- ggplot(plot_data, aes(x = Effect_Size, y = 1/CI_Width)) +
+    geom_point(aes(color = Effect_Direction), alpha = 0.6, size = 1.5) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "gray50", linewidth = 0.5) +
+    labs(
+      title = "Funnel Plot with Marginal Distributions",
+      x = "Effect Size",
+      y = "Precision (1/CI Width)"
+    ) +
+    scale_color_manual(
+      values = c(
+        "Negative" = "#313695",  # 蓝色
+        "Positive" = "#A50026",  # 红色
+        "Not Significant" = "#7f7f7f"  # 灰色
+      ),
+      name = "Effect Direction"
+    ) +
+    scale_x_continuous(limits = x_limits) +
+    theme_minimal() +
+    theme(
+      # 去掉所有网格线
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      # 美化其他元素
+      plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+      axis.title = element_text(size = 12, face = "bold"),
+      axis.text = element_text(size = 10),
+      legend.position = "bottom",
+      legend.title = element_text(face = "bold"),
+      # 添加细边框
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA)
+    )
+  
+  # 添加边缘直方图，使用不同的颜色
+  p_marginal <- ggExtra::ggMarginal(
+    p, 
+    type = "histogram", 
+    fill = "darkblue",      # 蓝色填充
+    color = "darkblue",     # 红色边框
+    alpha = 0.7,
+    size = 5              # 调整直方图大小
+  )
+  
+  return(p_marginal)
+}
+
+p_marginal <- plot_funnel_marginal(umar_data_clean)
+p_marginal
+```
+
+# 7 分组探索 精确度
+
+effect size 是否显著、方向如何
+
+
+## 01 整体
+
+```{r}
+library(ggpubr)
+plot_funnel_violin <- function(data, remove_outliers = TRUE, precision_threshold = 0.95) {
+  
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0)
+  
+  # 处理离群值 - 横轴和纵轴都处理
+  if (remove_outliers) {
+    # 横轴（效应值）离群值
+    effect_quantiles <- c(-6,7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  # 进行显著性检验（只比较Positive和Negative组）
+  pos_neg_data <- plot_data %>% 
+    filter(Effect_Direction %in% c("Positive", "Negative"))
+  
+  # Wilcoxon秩和检验（非参数检验）
+  wilcox_test <- wilcox.test(1/CI_Width ~ Effect_Direction, data = pos_neg_data)
+  p_value <- format.pval(wilcox_test$p.value, digits = 3)
+  
+  p1 <- ggplot(plot_data, aes(x = Effect_Direction, y = Effect_Size, fill = Effect_Direction)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, alpha = 0.7) +
+    scale_fill_manual(
+      values = c(
+        "Negative" = "#313695",
+        "Positive" = "#A50026", 
+        "Not Significant" = "#7f7f7f"
+      )
+    ) +
+    labs(
+      title = "Effect Size Distribution by Direction",
+      x = "Effect Direction",
+      y = "Effect Size"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  p2 <- ggplot(plot_data, aes(x = Effect_Direction, y = 1/CI_Width, fill = Effect_Direction)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, alpha = 0.7) +
+    # 添加显著性标注
+    geom_signif(
+      comparisons = list(c("Positive", "Negative")),
+      map_signif_level = TRUE,
+      textsize = 4,
+      vjust = 0.5,
+      y_position = max(1/plot_data$CI_Width) * 0.95
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Negative" = "#313695",
+        "Positive" = "#A50026",
+        "Not Significant" = "#7f7f7f"
+      )
+    ) +
+    labs(
+      title = "Precision Distribution by Effect Direction", 
+      subtitle = paste("Wilcoxon test p =", p_value),
+      x = "Effect Direction",
+      y = "Precision (1/CI Width)"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  # 使用patchwork组合图形
+  library(patchwork)
+  combined_plot <- p1 + p2 + plot_layout(ncol = 2)
+  
+  # 输出检验结果
+  cat("Positive vs Negative 组精度比较 (Wilcoxon秩和检验):\n")
+  cat("p-value:", p_value, "\n")
+  
+  # 描述性统计
+  stats_summary <- plot_data %>%
+    filter(Effect_Direction %in% c("Positive", "Negative")) %>%
+    group_by(Effect_Direction) %>%
+    summarise(
+      n = n(),
+      median_precision = median(1/CI_Width),
+      mean_precision = mean(1/CI_Width),
+      sd_precision = sd(1/CI_Width),
+      .groups = 'drop'
+    )
+  print(stats_summary)
+  
+  return(combined_plot)
+}
+
+p_violin <- plot_funnel_violin(umar_data_clean)
+p_violin
+```
+
+
+```{r}
+umar_data_clean2 <- umar_data_clean
+umar_data_clean2$Effect_Direction <- ifelse(umar_data_clean2$Effect_Size>0,"Positive","Negative")
+plot_funnel_violin(umar_data_clean2)
+
+posdata <-  umar_data_clean2%>% dplyr::select_all() %>% dplyr::filter(Effect_Direction=="Positive")
+
+negdata <- umar_data_clean2%>% dplyr::select_all() %>% dplyr::filter(Effect_Direction=="Negative")
+
+
+umar_data_clean2 <- umar_data_clean2%>% dplyr::select_all() %>% dplyr::filter(Effect_Direction%in%c("Positive","Negative"))
+
+
+```
+```{r}
+enhanced_sample_size_analysis <- function(data) {
+  # 数据准备（同前）
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0,
+           Effect_Direction %in% c("Positive", "Negative", "Not Significant"))
+  
+  # 1. 分位数回归分析
+  cat("=== 分位数回归分析 ===\n")
+  
+    # 处理离群值 - 横轴和纵轴都处理
+  if (remove_outliers) {
+    # 横轴（效应值）离群值 - 使用固定范围
+    effect_quantiles <- c(-6, 7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  # 按效应方向分组的精度分布
+  quant_model1 <- rq(1/CI_Width ~ Effect_Direction, 
+                    data = plot_data %>% filter(Effect_Direction %in% c("Positive", "Negative")),
+                    tau = c(0.25, 0.5, 0.75))
+  
+  print(summary(quant_model1))
+  
+  # 样本量对精度的影响（分位数回归）
+  quant_model2 <- rq(1/CI_Width ~ log10(Total_Sample_Size) * Effect_Direction,
+                    data = plot_data, tau = c(0.25, 0.5, 0.75))
+  
+  print(summary(quant_model2))
+  
+  # 2. 可视化分位数回归结果
+  p_quantile <- ggplot(plot_data, 
+                      aes(x = log10(Total_Sample_Size), y = 1/CI_Width, 
+                          color = Effect_Direction)) +
+    geom_point(alpha = 0.3) +
+    geom_quantile(quantiles = c(0.25, 0.5, 0.75), 
+                 linewidth = 1, alpha = 0.8) +
+    scale_color_manual(
+      values = c("Negative" = "#313695", 
+                "Positive" = "#A50026",
+                "Not Significant" = "#7f7f7f")
+    ) +
+    labs(title = "Quantile Regression: Precision vs Sample Size",
+         subtitle = "Lines show 25th, 50th, 75th percentiles",
+         x = "Log10(Total Sample Size)",
+         y = "Precision (1/CI Width)") +
+    theme_minimal()
+  
+  # 3. 保留Wilcoxon检验作为补充
+  cat("\n=== Wilcoxon检验（补充）===\n")
+  wilcox_test <- wilcox.test(1/CI_Width ~ Effect_Direction, 
+                            data = plot_data %>% filter(Effect_Direction %in% c("Positive", "Negative")))
+  cat("Wilcoxon检验 p值:", format.pval(wilcox_test$p.value, digits = 3), "\n")
+  
+  return(list(quantile_models = list(model1 = quant_model1, model2 = quant_model2),
+              plot = p_quantile,
+              wilcoxon_test = wilcox_test))
+}
+
+enhanced_sample_size_analysis(umar_data_clean2)
+
+```
+
+
+## 02 分组比较
+
+
+
+ 
+```{r}
+# 加载必要的包
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# 数据预处理和分组分析函数
+explore_sample_size_patterns <- function(data) {
+  
+  
+  
+  # 数据清理
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0,
+           !is.na(Total_Sample_Size),
+           !is.na(Num_Studies),
+           Effect_Direction %in% c("Positive", "Negative", "Not Significant"))
+  
+  cat("分析数据量:", nrow(plot_data), "\n\n")
+  
+  
+  
+  if (remove_outliers) {
+    # 横轴（效应值）离群值
+    effect_quantiles <- c(-6,7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  # 1. 按Total_Sample_Size分组分析
+  cat("=== 按总样本量分组分析 ===\n")
+  
+  # 创建样本量分组
+  plot_data <- plot_data %>%
+    mutate(
+      Sample_Size_Group = case_when(
+        Total_Sample_Size < 100 ~ "Small (<100)",
+        Total_Sample_Size >= 100 & Total_Sample_Size < 1000 ~ "Medium (100-1000)",
+        Total_Sample_Size >= 1000 & Total_Sample_Size < 10000 ~ "Large (1000-10000)",
+        Total_Sample_Size >= 10000 ~ "Very Large (≥10000)"
+      ),
+      Sample_Size_Group = factor(Sample_Size_Group, 
+                                levels = c("Small (<100)", "Medium (100-1000)", 
+                                         "Large (1000-10000)", "Very Large (≥10000)"))
+    )
+  
+  # 按样本量分组的精度比较
+  sample_size_groups <- unique(plot_data$Sample_Size_Group)
+  
+  for(group in sample_size_groups) {
+    group_data <- plot_data %>% filter(Sample_Size_Group == group)
+    pos_neg_data <- group_data %>% filter(Effect_Direction %in% c("Positive", "Negative"))
+    
+    if(nrow(pos_neg_data) >= 10) {  # 确保有足够数据
+      test_result <- wilcox.test(1/CI_Width ~ Effect_Direction, data = pos_neg_data)
+      stats <- pos_neg_data %>%
+        group_by(Effect_Direction) %>%
+        summarise(
+          n = n(),
+          median_precision = median(1/CI_Width),
+          mean_precision = mean(1/CI_Width)
+        )
+      
+      cat("样本量组:", group, "\n")
+      cat("Positive - 数量:", stats$n[stats$Effect_Direction == "Positive"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Positive"], 3), "\n")
+      cat("Negative - 数量:", stats$n[stats$Effect_Direction == "Negative"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Negative"], 3), "\n")
+      cat("Wilcoxon检验 p值:", format.pval(test_result$p.value, digits = 3), "\n")
+      cat("---\n")
+    }
+  }
+  
+  # 2. 按Num_Studies分组分析
+  cat("\n=== 按研究数量分组分析 ===\n")
+  
+  plot_data <- plot_data %>%
+    mutate(
+      Studies_Group = case_when(
+        Num_Studies == 1 ~ "Single Study",
+        Num_Studies >= 2 & Num_Studies <= 5 ~ "Small (2-5)",
+        Num_Studies >= 6 & Num_Studies <= 20 ~ "Medium (6-20)",
+        Num_Studies > 20 ~ "Large (>20)"
+      ),
+      Studies_Group = factor(Studies_Group, 
+                            levels = c("Single Study", "Small (2-5)", "Medium (6-20)", "Large (>20)"))
+    )
+  
+  studies_groups <- unique(plot_data$Studies_Group)
+  
+  for(group in studies_groups) {
+    group_data <- plot_data %>% filter(Studies_Group == group)
+    pos_neg_data <- group_data %>% filter(Effect_Direction %in% c("Positive", "Negative"))
+    
+    if(nrow(pos_neg_data) >= 10) {
+      test_result <- wilcox.test(1/CI_Width ~ Effect_Direction, data = pos_neg_data)
+      stats <- pos_neg_data %>%
+        group_by(Effect_Direction) %>%
+        summarise(
+          n = n(),
+          median_precision = median(1/CI_Width),
+          mean_precision = mean(1/CI_Width)
+        )
+      
+      cat("研究数量组:", group, "\n")
+      cat("Positive - 数量:", stats$n[stats$Effect_Direction == "Positive"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Positive"], 3), "\n")
+      cat("Negative - 数量:", stats$n[stats$Effect_Direction == "Negative"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Negative"], 3), "\n")
+      cat("Wilcoxon检验 p值:", format.pval(test_result$p.value, digits = 3), "\n")
+      cat("---\n")
+    }
+  }
+  
+  # 3. 可视化
+  p1 <- ggplot(plot_data %>% filter(Effect_Direction %in% c("Positive", "Negative")), 
+               aes(x = Sample_Size_Group, y = 1/CI_Width, fill = Effect_Direction)) +
+    geom_boxplot(alpha = 0.7) +
+    scale_fill_manual(values = c("Negative" = "#1f77b4", "Positive" = "#d62728")) +
+    labs(title = "Precision by Sample Size Group and Effect Direction",
+         x = "Total Sample Size Group",
+         y = "Precision (1/CI Width)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  p2 <- ggplot(plot_data %>% filter(Effect_Direction %in% c("Positive", "Negative")), 
+               aes(x = Studies_Group, y = 1/CI_Width, fill = Effect_Direction)) +
+    geom_boxplot(alpha = 0.7) +
+    scale_fill_manual(values = c("Negative" = "#1f77b4", "Positive" = "#d62728")) +
+    labs(title = "Precision by Number of Studies and Effect Direction",
+         x = "Number of Studies Group",
+         y = "Precision (1/CI Width)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  # 3. 样本量与精度的散点图
+  p3 <- ggplot(plot_data, aes(x = log10(Total_Sample_Size), y = 1/CI_Width, color = Effect_Direction)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = TRUE) +
+    scale_color_manual(values = c("Negative" = "#1f77b4", "Positive" = "#d62728", "Not Significant" = "#7f7f7f")) +
+    labs(title = "Precision vs Sample Size by Effect Direction",
+         x = "Log10(Total Sample Size)",
+         y = "Precision") +
+    theme_minimal()
+  
+  # 4. 研究数量与精度的关系
+  p4 <- ggplot(plot_data, aes(x = Num_Studies, y = 1/CI_Width, color = Effect_Direction)) +
+    geom_point(alpha = 0.5) +
+    geom_smooth(method = "lm", se = TRUE) +
+    scale_color_manual(values = c("Negative" = "#1f77b4", "Positive" = "#d62728", "Not Significant" = "#7f7f7f")) +
+    labs(title = "Precision vs Number of Studies by Effect Direction",
+         x = "Number of Studies",
+         y = "Precision") +
+    theme_minimal()
+  
+  # 组合图形
+  combined_plot <- (p1 + p2) / (p3 + p4) + plot_layout(heights = c(1, 1.5))
+  
+  return(list(plots = combined_plot, data = plot_data))
+}
+
+# 运行分析
+results <- explore_sample_size_patterns(umar_data_clean2)
+
+# 显示图形
+print(results$plots)
+
+# 额外分析：检查不同分组中显著结果的比例
+cat("\n=== 不同样本量组中显著结果比例 ===\n")
+significance_ratio <- results$data %>%
+  group_by(Sample_Size_Group) %>%
+  summarise(
+    total = n(),
+    positive_ratio = sum(Effect_Direction == "Positive") / n(),
+    negative_ratio = sum(Effect_Direction == "Negative") / n(),
+    ns_ratio = sum(Effect_Direction == "Not Significant") / n()
+  )
+print(significance_ratio)
+
+cat("\n=== 不同研究数量组中显著结果比例 ===\n")
+studies_ratio <- results$data %>%
+  group_by(Studies_Group) %>%
+  summarise(
+    total = n(),
+    positive_ratio = sum(Effect_Direction == "Positive") / n(),
+    negative_ratio = sum(Effect_Direction == "Negative") / n(),
+    ns_ratio = sum(Effect_Direction == "Not Significant") / n()
+  )
+print(studies_ratio)
+
+```
+
+```{r,fig.height=18,fig.width=16,result="hide"}
+
+data <- umar_data_clean2
+
+explore_sample_size_patterns <- function(data) {
+  # 数据清理
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0,
+           !is.na(Total_Sample_Size),
+           !is.na(Num_Studies),
+           Effect_Direction %in% c("Positive", "Negative", "Not Significant"))
+  
+  cat("分析数据量:", nrow(plot_data), "\n\n")
+  
+  if (remove_outliers) {
+    # 横轴（效应值）离群值
+    effect_quantiles <- c(-6, 7)
+    
+    # 纵轴（精度）离群值
+    precision_values <- 1/plot_data$CI_Width
+    precision_quantiles <- quantile(precision_values, 
+                                   probs = c(1 - precision_threshold, precision_threshold), 
+                                   na.rm = TRUE)
+    
+    plot_data <- plot_data %>%
+      filter(Effect_Size >= effect_quantiles[1] & Effect_Size <= effect_quantiles[2],
+             1/CI_Width >= precision_quantiles[1] & 1/CI_Width <= precision_quantiles[2])
+  }
+  
+  # 1. 按Total_Sample_Size分组分析
+  cat("=== 按总样本量分组分析 ===\n")
+  
+  # 创建样本量分组
+  plot_data <- plot_data %>%
+    mutate(
+      Sample_Size_Group = case_when(
+        Total_Sample_Size < 100 ~ "Small (<100)",
+        Total_Sample_Size >= 100 & Total_Sample_Size < 1000 ~ "Medium (100-1000)",
+        Total_Sample_Size >= 1000 & Total_Sample_Size < 10000 ~ "Large (1000-10000)",
+        Total_Sample_Size >= 10000 ~ "Very Large (≥10000)"
+      ),
+      Sample_Size_Group = factor(Sample_Size_Group, 
+                                levels = c("Small (<100)", "Medium (100-1000)", 
+                                         "Large (1000-10000)", "Very Large (≥10000)"))
+    )
+  
+  # 按样本量分组的精度比较
+  sample_size_groups <- unique(plot_data$Sample_Size_Group)
+  
+  for(group in sample_size_groups) {
+    group_data <- plot_data %>% filter(Sample_Size_Group == group)
+    pos_neg_data <- group_data %>% filter(Effect_Direction %in% c("Positive", "Negative"))
+    
+    if(nrow(pos_neg_data) >= 10) {
+      test_result <- wilcox.test(1/CI_Width ~ Effect_Direction, data = pos_neg_data)
+      stats <- pos_neg_data %>%
+        group_by(Effect_Direction) %>%
+        summarise(
+          n = n(),
+          median_precision = median(1/CI_Width),
+          mean_precision = mean(1/CI_Width)
+        )
+      
+      cat("样本量组:", group, "\n")
+      cat("Positive - 数量:", stats$n[stats$Effect_Direction == "Positive"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Positive"], 3), "\n")
+      cat("Negative - 数量:", stats$n[stats$Effect_Direction == "Negative"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Negative"], 3), "\n")
+      cat("Wilcoxon检验 p值:", format.pval(test_result$p.value, digits = 3), "\n")
+      cat("---\n")
+    }
+  }
+  
+  # 2. 按Num_Studies分组分析
+  cat("\n=== 按研究数量分组分析 ===\n")
+  
+  plot_data <- plot_data %>%
+    mutate(
+      Studies_Group = case_when(
+        #Num_Studies == 1 ~ "Single Study",
+        Num_Studies >= 1 & Num_Studies <= 5 ~ "Small (2-5)",
+        Num_Studies >= 6 & Num_Studies <= 20 ~ "Medium (6-20)",
+        Num_Studies > 20 ~ "Large (>20)"
+      ),
+      Studies_Group = factor(Studies_Group, 
+                            levels = c("Single Study", "Small (2-5)", "Medium (6-20)", "Large (>20)"))
+    )
+  
+  studies_groups <- unique(plot_data$Studies_Group)
+  
+  for(group in studies_groups) {
+    group_data <- plot_data %>% filter(Studies_Group == group)
+    pos_neg_data <- group_data %>% filter(Effect_Direction %in% c("Positive", "Negative"))
+    
+    if(nrow(pos_neg_data) >= 10) {
+      test_result <- wilcox.test(1/CI_Width ~ Effect_Direction, data = pos_neg_data)
+      stats <- pos_neg_data %>%
+        group_by(Effect_Direction) %>%
+        summarise(
+          n = n(),
+          median_precision = median(1/CI_Width),
+          mean_precision = mean(1/CI_Width)
+        )
+      
+      cat("研究数量组:", group, "\n")
+      cat("Positive - 数量:", stats$n[stats$Effect_Direction == "Positive"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Positive"], 3), "\n")
+      cat("Negative - 数量:", stats$n[stats$Effect_Direction == "Negative"], 
+          ", 精度中位数:", round(stats$median_precision[stats$Effect_Direction == "Negative"], 3), "\n")
+      cat("Wilcoxon检验 p值:", format.pval(test_result$p.value, digits = 3), "\n")
+      cat("---\n")
+    }
+  }
+  
+  # 3. 可视化 - 使用统一的画图风格
+  # 样本量分组的精度分布
+  p1_data <- plot_data %>% filter(Effect_Direction %in% c("Positive", "Negative"))
+  p1_test <- wilcox.test(1/CI_Width ~ Effect_Direction, data = p1_data)
+  
+  p1 <- ggplot(p1_data, aes(x = Effect_Direction, y = 1/CI_Width, fill = Effect_Direction)) +
+    geom_violin(alpha = 0.7) +
+    geom_boxplot(width = 0.2, alpha = 0.7) +
+    geom_signif(
+      comparisons = list(c("Positive", "Negative")),
+      map_signif_level = TRUE,
+      textsize = 4,
+      vjust = 0.5,
+      y_position = max(1/p1_data$CI_Width, na.rm = TRUE) * 0.95
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Negative" = "#313695",
+        "Positive" = "#A50026"
+      )
+    ) +
+    labs(
+      title = "Precision Distribution by Effect Direction",
+      subtitle = paste("Wilcoxon test p =", format.pval(p1_test$p.value, digits = 3)),
+      x = "Effect Direction",
+      y = "Precision (1/CI Width)"
+    ) +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+  
+  # 按样本量分组
+# 使用星号表示显著性水平
+p2 <- ggplot(p1_data, aes(x = Sample_Size_Group, y = 1/CI_Width, fill = Effect_Direction)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.2, alpha = 0.7, position = position_dodge(0.9)) +
+  stat_compare_means(
+    aes(group = Effect_Direction),
+    method = "wilcox.test",
+    label = "p.signif",
+    size = 4,
+    label.y = max(1/p1_data$CI_Width, na.rm = TRUE) * 0.95,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Negative" = "#313695",
+      "Positive" = "#A50026"
+    )
+  ) +
+  labs(
+    title = "Precision by Sample Size Group and Effect Direction",
+    x = "Total Sample Size Group",
+    y = "Precision (1/CI Width)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+p3 <- ggplot(p1_data, aes(x = Studies_Group, y = 1/CI_Width, fill = Effect_Direction)) +
+  geom_violin(alpha = 0.7) +
+  geom_boxplot(width = 0.2, alpha = 0.7, position = position_dodge(0.9)) +
+  stat_compare_means(
+    aes(group = Effect_Direction),
+    method = "wilcox.test",
+    label = "p.signif",
+    size = 4,
+    label.y = max(1/p1_data$CI_Width, na.rm = TRUE) * 0.95,
+    show.legend = FALSE
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Negative" = "#313695",
+      "Positive" = "#A50026"
+    )
+  ) +
+  labs(
+    title = "Precision by Number of Studies and Effect Direction",
+    x = "Number of Studies Group",
+    y = "Precision (1/CI Width)"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+  
+  # 样本量与精度的散点图
+ p4 <- ggplot(plot_data %>% filter(Total_Sample_Size <= 400000), aes(x = Total_Sample_Size, y = 1/CI_Width, color = Effect_Direction)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2, 
+              formula = y ~ sqrt(x)) +  # 使用sqrt(x)变换
+  scale_color_manual(
+    values = c(
+      "Negative" = "#313695",
+      "Positive" = "#A50026", 
+      "Not Significant" = "#7f7f7f"
+    )
+  ) +
+  labs(
+    title = "Precision vs Sample Size by Effect Direction",
+    subtitle = "Linear fit with sqrt(Sample Size) transformation",
+    x = "Total Sample Size",
+    y = "Precision (1/CI Width)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# 比较Positive和Negative组的斜率差异 - 使用sqrt变换
+comparison_data_sample <- plot_data %>% 
+  filter(Effect_Direction %in% c("Positive", "Negative"))
+
+# 使用sqrt变换的交互项检验
+model_interaction_sample <- lm(1/CI_Width ~ sqrt(Total_Sample_Size) * Effect_Direction, 
+                              data = comparison_data_sample)
+summary_sample <- summary(model_interaction_sample)
+
+# 提取交互项的p值（斜率差异的显著性）
+interaction_p_sample <- summary_sample$coefficients[4, 4]
+cat("Positive vs Negative组斜率差异的p值 (sqrt变换):", interaction_p_sample, "\n")
+
+# 分别拟合两个模型（使用sqrt变换）
+model_positive_sample <- lm(1/CI_Width ~ sqrt(Total_Sample_Size), 
+                           data = comparison_data_sample %>% filter(Effect_Direction == "Positive"))
+model_negative_sample <- lm(1/CI_Width ~ sqrt(Total_Sample_Size), 
+                           data = comparison_data_sample %>% filter(Effect_Direction == "Negative"))
+
+cat("Positive组斜率:", round(coef(model_positive_sample)[2], 4), 
+    "p值:", round(summary(model_positive_sample)$coefficients[2, 4], 4), "\n")
+cat("Negative组斜率:", round(coef(model_negative_sample)[2], 4), 
+    "p值:", round(summary(model_negative_sample)$coefficients[2, 4], 4), "\n")
+
+# 在图上添加显著性标注 - 右上角
+p4 <- p4 + 
+  # 斜率差异p值
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Slope difference: p =", round(interaction_p_sample, 4)),
+           hjust = 1.1, vjust = 1.5, size = 4, color = "black") +
+  # Positive组斜率
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Positive slope:", round(coef(model_positive_sample)[2], 4)),
+           hjust = 1.1, vjust = 3, size = 3.5, color = "#A50026") +
+  # Negative组斜率
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Negative slope:", round(coef(model_negative_sample)[2], 4)),
+           hjust = 1.1, vjust = 4.5, size = 3.5, color = "#313695")
+  
+  # 研究数量与精度的关系
+  p5 <- ggplot(plot_data %>% filter(Num_Studies <= 400), 
+             aes(x = Num_Studies, y = 1/CI_Width, color = Effect_Direction)) +
+  geom_point(alpha = 0.6) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2, 
+              formula = y ~ sqrt(x)) +  # 关键修改：使用sqrt(x)
+  scale_color_manual(
+    values = c(
+      "Negative" = "#313695",
+      "Positive" = "#A50026", 
+      "Not Significant" = "#7f7f7f"
+    )
+  ) +
+  labs(
+    title = "Precision vs Number of Studies by Effect Direction",
+    subtitle = "Linear fit with sqrt(Number of Studies) transformation",
+    x = "Number of Studies",
+    y = "Precision (1/CI Width)"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# 比较Positive和Negative组的斜率差异 - 使用sqrt变换
+comparison_data_studies <- plot_data %>% 
+  filter(Effect_Direction %in% c("Positive", "Negative"),
+         Num_Studies <= 400)
+
+# 使用sqrt变换的交互项检验
+model_interaction_studies <- lm(1/CI_Width ~ sqrt(Num_Studies) * Effect_Direction, 
+                               data = comparison_data_studies)
+summary_studies <- summary(model_interaction_studies)
+
+# 提取交互项的p值（斜率差异的显著性）
+interaction_p_studies <- summary_studies$coefficients[4, 4]
+cat("Positive vs Negative组斜率差异的p值 (sqrt变换):", interaction_p_studies, "\n")
+
+# 分别拟合两个模型（使用sqrt变换）
+model_positive_studies <- lm(1/CI_Width ~ sqrt(Num_Studies), 
+                            data = comparison_data_studies %>% filter(Effect_Direction == "Positive"))
+model_negative_studies <- lm(1/CI_Width ~ sqrt(Num_Studies), 
+                            data = comparison_data_studies %>% filter(Effect_Direction == "Negative"))
+
+cat("Positive组斜率:", round(coef(model_positive_studies)[2], 4), 
+    "p值:", round(summary(model_positive_studies)$coefficients[2, 4], 4), "\n")
+cat("Negative组斜率:", round(coef(model_negative_studies)[2], 4), 
+    "p值:", round(summary(model_negative_studies)$coefficients[2, 4], 4), "\n")
+
+# 在图上添加显著性标注 - 右上角
+p5 <- p5 + 
+  # 斜率差异p值
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Slope difference: p =", round(interaction_p_studies, 4)),
+           hjust = 1.1, vjust = 1.5, size = 4, color = "black") +
+  # Positive组斜率
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Positive slope:", round(coef(model_positive_studies)[2], 4)),
+           hjust = 1.1, vjust = 3, size = 3.5, color = "#A50026") +
+  # Negative组斜率
+  annotate("text", x = Inf, y = Inf, 
+           label = paste("Negative slope:", round(coef(model_negative_studies)[2], 4)),
+           hjust = 1.1, vjust = 4.5, size = 3.5, color = "#313695")
+  # 组合图形
+  combined_plot <- (p1 + p2+p3) /(p5 +  p4) + 
+    plot_layout(heights = c(1, 1, 1))
+  
+  combined_plot2 <- (p1 + p2) /(p3+p5) + 
+    plot_layout(heights = c(1, 1, 1))
+  
+  return(list(plots = combined_plot,plots2 = combined_plot2, data = plot_data))
+}
+
+# 运行分析
+results <- explore_sample_size_patterns(umar_data_clean2)
+
+# 显示图形
+print(results$plots)
+ print(results$plots2)
+
+```
+ 
+ 
+
+ 
+
+ 
+
+
+
+```{r}
+
+# 多因素分析：同时考虑样本量和研究数量
+multi_factor_analysis <- function(data) {
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0,
+           !is.na(Total_Sample_Size),
+           !is.na(Num_Studies),
+           Effect_Direction %in% c("Positive", "Negative"))
+  
+  # 创建交互分组
+  plot_data <- plot_data %>%
+    mutate(
+      Sample_Size_Cat = cut(Total_Sample_Size, 
+                           breaks = c(0, 100, 1000, 10000, Inf),
+                           labels = c("<100", "100-1000", "1000-10000", "≥10000")),
+      Studies_Cat = cut(Num_Studies,
+                       breaks = c(0, 1, 5, 20, Inf),
+                       labels = c("1", "2-5", "6-20", ">20"))
+    )
+  
+  # 交互分组分析
+  interaction_groups <- plot_data %>%
+    group_by(Sample_Size_Cat, Studies_Cat) %>%
+    filter(n() >= 5) %>%  # 只分析有足够数据的组
+    group_split()
+  
+  cat("=== 样本量×研究数量交互分组分析 ===\n")
+  
+  for(i in seq_along(interaction_groups)) {
+    group_data <- interaction_groups[[i]]
+    sample_group <- unique(group_data$Sample_Size_Cat)
+    studies_group <- unique(group_data$Studies_Cat)
+    
+    if(nrow(group_data) >= 10) {
+      test_result <- wilcox.test(1/CI_Width ~ Effect_Direction, data = group_data)
+      
+      cat("样本量:", sample_group, "研究数量:", studies_group, "\n")
+      cat("总数据量:", nrow(group_data), "\n")
+      cat("Positive组数量:", sum(group_data$Effect_Direction == "Positive"), "\n")
+      cat("Negative组数量:", sum(group_data$Effect_Direction == "Negative"), "\n")
+      cat("Wilcoxon检验 p值:", format.pval(test_result$p.value, digits = 3), "\n")
+      
+      if(test_result$p.value < 0.05) {
+        medians <- group_data %>%
+          group_by(Effect_Direction) %>%
+          summarise(median_precision = median(1/CI_Width))
+        cat("精度中位数 - Positive:", round(medians$median_precision[medians$Effect_Direction == "Positive"], 3),
+            "Negative:", round(medians$median_precision[medians$Effect_Direction == "Negative"], 3), "\n")
+      }
+      cat("---\n")
+    }
+  }
+}
+
+# 运行多因素分析
+multi_factor_analysis(umar_data_clean)
+
+```
+```{r}
+#install.packages("moments")
+library(moments)
+# 深入分析发表偏倚的模式
+detailed_bias_analysis <- function(data) {
+  plot_data <- data %>%
+    filter(!is.na(CI_Width) & CI_Width > 0,
+           Effect_Direction %in% c("Positive", "Negative"))
+  
+  # 1. 检查精度分布的形状
+  cat("=== 精度分布形状分析 ===\n")
+  distribution_stats <- plot_data %>%
+    group_by(Effect_Direction) %>%
+    summarise(
+      n = n(),
+      # 分布偏度
+      skewness = moments::skewness(1/CI_Width),
+      # 变异系数
+      cv = sd(1/CI_Width) / mean(1/CI_Width),
+      # 低精度研究的比例
+      low_precision_ratio = sum(1/CI_Width < median(1/CI_Width)) / n()
+    )
+  print(distribution_stats)
+  
+  # 2. 检查不同精度区间的比例
+  cat("\n=== 不同精度区间的比例 ===\n")
+  precision_quantiles <- quantile(1/plot_data$CI_Width, probs = c(0.33, 0.67))
+  
+  precision_groups <- plot_data %>%
+    mutate(
+      Precision_Group = case_when(
+        1/CI_Width < precision_quantiles[1] ~ "Low Precision",
+        1/CI_Width >= precision_quantiles[1] & 1/CI_Width < precision_quantiles[2] ~ "Medium Precision", 
+        1/CI_Width >= precision_quantiles[2] ~ "High Precision"
+      )
+    ) %>%
+    group_by(Effect_Direction, Precision_Group) %>%
+    summarise(n = n(), .groups = 'drop') %>%
+    group_by(Effect_Direction) %>%
+    mutate(prop = n / sum(n))
+  
+  print(precision_groups)
+}
+
+# 运行分析
+detailed_bias_analysis(umar_data_clean)
+
+```
+
+
+
+ 
+```{r}
+
+
+```
+
